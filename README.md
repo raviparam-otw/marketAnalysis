@@ -1,6 +1,6 @@
 # Alpaca Intraday Lab
 
-A local, **paper-trading-only** intraday experiment for Alpaca. It scans a fixed universe of liquid US equities and submits a long paper order only when an opening-range breakout is confirmed by VWAP, relative volume, and broad-market direction.
+A local, **paper-trading-only** intraday experiment for Alpaca. The live engine discovers all active Alpaca US equities, screens them for tradeability and liquidity, and submits a long paper order only when an opening-range breakout is confirmed by VWAP, relative volume, and broad-market direction.
 
 > This is experimental software, not investment advice. It intentionally cannot connect to Alpaca live trading. Paper results can differ materially from real execution.
 
@@ -26,6 +26,17 @@ After the first 15 minutes of the regular session, the engine looks for:
 4. SPY or QQQ rising on the latest bar.
 
 If multiple symbols qualify, the engine selects the greatest relative-volume candidate. A signal is not a guarantee of profit.
+
+## Dynamic symbol universe
+
+The live engine no longer relies on the ten-symbol `WATCHLIST`. Every 30 minutes it:
+
+1. requests all active US equities from Alpaca's Assets API;
+2. removes OTC, non-tradable, non-fractional, explicitly excluded, warrant, unit, right, preferred, leveraged, and inverse instruments;
+3. requests IEX snapshots in batches and removes symbols below $5, below $1 million in daily dollar volume, or above a 0.5% bid/ask spread; and
+4. ranks the survivors by dollar volume and fetches minute bars for the top 100 in small batches so Alpaca's combined response limit does not silently omit symbols.
+
+These values are configurable in `.env`. `WATCHLIST` remains the historical-backtest universe and the safe live fallback if a universe refresh temporarily returns no candidates. The current Assets API is not a point-in-time historical universe, so applying it directly to old backtests would create survivorship bias.
 
 ## Setup (macOS, Python 3.13)
 
