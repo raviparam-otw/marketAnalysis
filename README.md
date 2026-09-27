@@ -30,8 +30,8 @@ If multiple symbols qualify, the engine selects the greatest relative-volume can
 ## Setup (macOS, Python 3.13)
 
 ```bash
-git clone YOUR_REPOSITORY_URL
-cd alpaca-intraday-lab
+git clone https://github.com/raviparam-otw/marketAnalysis.git
+cd marketAnalysis
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
