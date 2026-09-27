@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpaca-intraday-lab"
+version = "0.1.0"
+description = "Paper-only Alpaca intraday momentum experiment with a local dashboard"
+requires-python = ">=3.13,<4"
+dependencies = [
+  "alpaca-py==0.44.0",
+  "fastapi>=0.116,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "python-dotenv>=1.1,<2",
+  "pandas>=2.3,<3",
+  "numpy>=2.3,<3",
+  "pydantic>=2.11,<3",
+  "jinja2>=3.1,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<9", "pytest-cov>=6.2,<7", "httpx>=0.28,<1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
