@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .broker import PaperBroker
@@ -27,6 +27,9 @@ class TradingEngine:
         self.latest_signals: dict[str, dict] = {}
         self.guards: dict[str, PositionGuard] = {}
         self.last_account: dict = {}
+        self.universe: list[str] = list(config.watchlist)
+        self.universe_stats: dict[str, int] = {}
+        self.universe_refreshed_at: datetime | None = None
 
     def log(self, level: str, message: str, **details) -> None:
         self.logs.appendleft(
@@ -87,10 +90,12 @@ class TradingEngine:
         if positions or not self._entry_session(now):
             return
 
-        bars = await asyncio.to_thread(self.broker.minute_bars, list(self.config.watchlist))
+        await self._refresh_universe_if_needed(now)
+        scan_symbols = list(dict.fromkeys([*self.universe, "SPY", "QQQ"]))
+        bars = await asyncio.to_thread(self.broker.minute_bars, scan_symbols)
         market_aligned = self._market_alignment(bars)
         candidates = []
-        for symbol in self.config.watchlist:
+        for symbol in self.universe:
             signal = self.strategy.evaluate(symbol, bars.get(symbol, self._empty_frame()), market_aligned, now)
             self.latest_signals[symbol] = signal.to_dict()
             if signal.decision == Decision.BUY:
@@ -106,6 +111,24 @@ class TradingEngine:
         order = await asyncio.to_thread(self.broker.buy_notional, best.symbol, check.notional)
         self.guards[best.symbol] = PositionGuard(best.symbol, best.price, best.price, now)
         self.log("TRADE", "Paper buy submitted", symbol=best.symbol, notional=check.notional, order_id=str(order.id))
+
+    async def _refresh_universe_if_needed(self, now: datetime) -> None:
+        if not self.config.dynamic_universe:
+            self.universe = list(self.config.watchlist)
+            return
+        refresh_after = timedelta(minutes=self.config.universe_refresh_minutes)
+        if self.universe_refreshed_at and now - self.universe_refreshed_at < refresh_after:
+            return
+
+        selected, stats = await asyncio.to_thread(self.broker.discover_universe)
+        if selected:
+            self.universe = selected
+            self.universe_stats = stats
+            self.universe_refreshed_at = now
+            self.log("INFO", "Dynamic Alpaca universe refreshed", **stats)
+        else:
+            # Keep the previous/fallback universe if a temporary data issue screens out everything.
+            self.log("WARN", "Universe refresh returned no candidates; keeping previous universe")
 
     async def _manage_positions(self, positions: list, now: datetime) -> None:
         for position in positions:
@@ -155,5 +178,11 @@ class TradingEngine:
                 "daily_loss_limit": self.config.daily_loss_limit,
             },
             "signals": list(self.latest_signals.values()),
+            "universe": {
+                "dynamic": self.config.dynamic_universe,
+                "symbols": self.universe,
+                "refreshed_at": self.universe_refreshed_at.isoformat() if self.universe_refreshed_at else None,
+                "stats": self.universe_stats,
+            },
             "logs": list(self.logs),
         }

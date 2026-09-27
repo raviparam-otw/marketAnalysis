@@ -15,6 +15,19 @@ def _float(name: str, default: float) -> float:
     return float(os.getenv(name, str(default)))
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    return default if raw is None else raw.strip().lower() == "true"
+
+
+def _symbols(name: str, default: str = "") -> tuple[str, ...]:
+    return tuple(
+        symbol.strip().upper()
+        for symbol in os.getenv(name, default).split(",")
+        if symbol.strip()
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     api_key: str = field(default_factory=lambda: os.getenv("ALPACA_API_KEY", ""))
@@ -33,13 +46,26 @@ class Settings:
     trail_distance_pct: float = field(default_factory=lambda: _float("TRAIL_DISTANCE_PCT", 0.015))
     relative_volume_min: float = field(default_factory=lambda: _float("RELATIVE_VOLUME_MIN", 1.5))
     poll_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_SECONDS", "60")))
+    dynamic_universe: bool = field(default_factory=lambda: _bool("DYNAMIC_UNIVERSE", True))
+    universe_refresh_minutes: int = field(
+        default_factory=lambda: int(os.getenv("UNIVERSE_REFRESH_MINUTES", "30"))
+    )
+    universe_size: int = field(default_factory=lambda: int(os.getenv("UNIVERSE_SIZE", "100")))
+    snapshot_batch_size: int = field(
+        default_factory=lambda: int(os.getenv("SNAPSHOT_BATCH_SIZE", "200"))
+    )
+    bar_batch_size: int = field(default_factory=lambda: int(os.getenv("BAR_BATCH_SIZE", "20")))
+    min_price: float = field(default_factory=lambda: _float("MIN_PRICE", 5.0))
+    min_dollar_volume: float = field(
+        default_factory=lambda: _float("MIN_DOLLAR_VOLUME", 1_000_000)
+    )
+    max_spread_pct: float = field(default_factory=lambda: _float("MAX_SPREAD_PCT", 0.005))
+    excluded_symbols: tuple[str, ...] = field(
+        default_factory=lambda: _symbols("EXCLUDED_SYMBOLS")
+    )
     watchlist: tuple[str, ...] = field(
-        default_factory=lambda: tuple(
-            s.strip().upper()
-            for s in os.getenv(
-                "WATCHLIST", "SPY,QQQ,NVDA,TSLA,AMD,PLTR,AAPL,META,AMZN,MSFT"
-            ).split(",")
-            if s.strip()
+        default_factory=lambda: _symbols(
+            "WATCHLIST", "SPY,QQQ,NVDA,TSLA,AMD,PLTR,AAPL,META,AMZN,MSFT"
         )
     )
 
@@ -54,6 +80,14 @@ class Settings:
             raise ValueError("Expected floor < starting balance < target.")
         if self.max_exposure <= 0 or self.daily_loss_limit <= 0:
             raise ValueError("Exposure and loss limits must be positive.")
+        if self.universe_size <= 0 or self.snapshot_batch_size <= 0 or self.bar_batch_size <= 0:
+            raise ValueError("Universe size and data batch sizes must be positive.")
+        if self.universe_refresh_minutes <= 0:
+            raise ValueError("Universe refresh interval must be positive.")
+        if self.min_price <= 0 or self.min_dollar_volume < 0:
+            raise ValueError("Universe price and liquidity limits are invalid.")
+        if not (0 < self.max_spread_pct < 1):
+            raise ValueError("MAX_SPREAD_PCT must be between 0 and 1.")
 
 
 settings = Settings()
