@@ -11,3 +11,4 @@ build/
 .DS_Store
 bot_state.json
 backtest-results*.json
+trade-data/

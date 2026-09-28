@@ -74,7 +74,7 @@ source .venv/bin/activate
 PYTHONPATH=src python run.py
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The engine starts only when you click **Start engine**. **Kill switch** cancels open orders, requests closure of every paper position, and stops scanning.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The engine starts only when you click **Start engine**. **Kill switch** cancels open orders, requests closure of every paper position, and stops scanning.\n\n## Daily trade journal\n\nWhen the paper engine starts it creates `trade-data/trades-YYYY-MM-DD.json` (configurable with `TRADE_LOG_DIR`). Every buy and sell order is written to that file immediately after submission using an atomic file replacement, so the day does not depend on a graceful 4:00 PM shutdown. The journal keeps order ID, symbol, side, reason, requested size, signal price, status, fill quantity/price/time when available, approximate exit P&L, and a running daily summary. Pending Alpaca orders are refreshed on later engine cycles so accepted orders can become filled/canceled/rejected in the same JSON file. The `trade-data/` directory is intentionally excluded from Git.
 
 ## Important limitations
 

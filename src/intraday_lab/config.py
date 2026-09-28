@@ -46,6 +46,9 @@ class Settings:
     trail_distance_pct: float = field(default_factory=lambda: _float("TRAIL_DISTANCE_PCT", 0.015))
     relative_volume_min: float = field(default_factory=lambda: _float("RELATIVE_VOLUME_MIN", 1.5))
     poll_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_SECONDS", "60")))
+    trade_log_dir: str = field(
+        default_factory=lambda: os.getenv("TRADE_LOG_DIR", str(ROOT / "trade-data"))
+    )
     dynamic_universe: bool = field(default_factory=lambda: _bool("DYNAMIC_UNIVERSE", True))
     universe_refresh_minutes: int = field(
         default_factory=lambda: int(os.getenv("UNIVERSE_REFRESH_MINUTES", "30"))

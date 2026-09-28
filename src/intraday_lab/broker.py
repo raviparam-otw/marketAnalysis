@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
@@ -72,9 +73,6 @@ class PaperBroker:
         end = datetime.now(timezone.utc)
         start = end - timedelta(hours=lookback_hours)
         result: dict[str, pd.DataFrame] = {}
-        # Alpaca bar limits apply to the combined multi-symbol response. Small
-        # batches prevent highly active alphabetically-first symbols from
-        # consuming the response before later symbols receive any bars.
         for offset in range(0, len(symbols), self.config.bar_batch_size):
             batch = symbols[offset : offset + self.config.bar_batch_size]
             request = StockBarsRequest(
@@ -108,6 +106,12 @@ class PaperBroker:
 
     def close_position(self, symbol: str):
         return self.trading.close_position(symbol)
+
+    def order(self, order_id: str):
+        return self.trading.get_order_by_id(UUID(str(order_id)))
+
+    def cancel_open_orders(self):
+        return self.trading.cancel_orders()
 
     def close_all(self):
         return self.trading.close_all_positions(cancel_orders=True)

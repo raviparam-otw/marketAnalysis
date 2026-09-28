@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from .broker import PaperBroker
 from .config import Settings
+from .journal import TradeJournal
 from .models import Decision, PositionGuard
 from .risk import RiskManager
 from .strategy import OpeningRangeVwapStrategy
@@ -21,6 +22,7 @@ class TradingEngine:
         self.broker = broker
         self.strategy = OpeningRangeVwapStrategy(config.relative_volume_min)
         self.risk = RiskManager(config)
+        self.journal = TradeJournal(config.trade_log_dir)
         self.running = False
         self.task: asyncio.Task | None = None
         self.logs: deque[dict] = deque(maxlen=250)
@@ -45,9 +47,10 @@ class TradingEngine:
         if self.running:
             return
         self.config.validate()
+        path = self.journal.ensure_today()
         self.running = True
         self.task = asyncio.create_task(self._loop())
-        self.log("INFO", "Paper engine started")
+        self.log("INFO", "Paper engine started", trade_log=str(path))
 
     async def stop(self) -> None:
         self.running = False
@@ -59,11 +62,38 @@ class TradingEngine:
                 await task
             except asyncio.CancelledError:
                 pass
+        try:
+            await self._sync_journal_orders()
+        except Exception as exc:
+            self.log("WARN", "Final order-status sync failed", error=str(exc))
         self.log("INFO", "Engine stopped")
 
     async def kill_switch(self) -> None:
         await self.stop()
-        await asyncio.to_thread(self.broker.close_all)
+        positions = await asyncio.to_thread(self.broker.positions)
+        try:
+            await asyncio.to_thread(self.broker.cancel_open_orders)
+        except Exception as exc:
+            self.log("ERROR", "Could not cancel open orders", error=str(exc))
+
+        for position in positions:
+            symbol = position.symbol
+            try:
+                order = await asyncio.to_thread(self.broker.close_position, symbol)
+                unrealized = float(position.unrealized_pl)
+                self._record_order(
+                    order,
+                    side="SELL",
+                    symbol=symbol,
+                    reason="kill_switch",
+                    requested_qty=float(position.qty),
+                    signal_price=float(position.current_price),
+                    approximate_pl=unrealized,
+                )
+                self.risk.record_closed_trade(unrealized)
+            except Exception as exc:
+                self.log("ERROR", "Kill-switch exit failed", symbol=symbol, error=str(exc))
+
         self.guards.clear()
         self.log("WARN", "Kill switch executed; orders canceled and positions closing")
 
@@ -71,12 +101,13 @@ class TradingEngine:
         while self.running:
             try:
                 await self.run_cycle()
-            except Exception as exc:  # keep dashboard alive and surface broker/data errors
+            except Exception as exc:
                 self.log("ERROR", "Cycle failed", error=str(exc))
             await asyncio.sleep(self.config.poll_seconds)
 
     async def run_cycle(self) -> None:
         now = datetime.now(EASTERN)
+        await self._sync_journal_orders()
         account = await asyncio.to_thread(self.broker.account_snapshot)
         positions = await asyncio.to_thread(self.broker.positions)
         self.last_account = account
@@ -109,8 +140,42 @@ class TradingEngine:
             self.log("INFO", "Entry rejected", reason=check.reason)
             return
         order = await asyncio.to_thread(self.broker.buy_notional, best.symbol, check.notional)
+        self._record_order(
+            order,
+            side="BUY",
+            symbol=best.symbol,
+            reason=best.reason,
+            requested_notional=check.notional,
+            signal_price=best.price,
+        )
         self.guards[best.symbol] = PositionGuard(best.symbol, best.price, best.price, now)
-        self.log("TRADE", "Paper buy submitted", symbol=best.symbol, notional=check.notional, order_id=str(order.id))
+        self.log(
+            "TRADE",
+            "Paper buy submitted",
+            symbol=best.symbol,
+            notional=check.notional,
+            order_id=str(order.id),
+        )
+
+    async def _sync_journal_orders(self) -> None:
+        for order_id in self.journal.pending_order_ids():
+            try:
+                order = await asyncio.to_thread(self.broker.order, order_id)
+                self.journal.update_order(order)
+            except Exception as exc:
+                self.log("WARN", "Order-status sync failed", order_id=order_id, error=str(exc))
+
+    def _record_order(self, order, **details) -> None:
+        try:
+            self.journal.record_order(order, **details)
+        except Exception as exc:
+            self.log(
+                "ERROR",
+                "Trade journal write failed",
+                order_id=str(getattr(order, "id", "unknown")),
+                error=str(exc),
+            )
+            raise
 
     async def _refresh_universe_if_needed(self, now: datetime) -> None:
         if not self.config.dynamic_universe:
@@ -127,7 +192,6 @@ class TradingEngine:
             self.universe_refreshed_at = now
             self.log("INFO", "Dynamic Alpaca universe refreshed", **stats)
         else:
-            # Keep the previous/fallback universe if a temporary data issue screens out everything.
             self.log("WARN", "Universe refresh returned no candidates; keeping previous universe")
 
     async def _manage_positions(self, positions: list, now: datetime) -> None:
@@ -141,11 +205,27 @@ class TradingEngine:
             if now.time() >= time(15, 50):
                 reason = "end_of_day"
             if reason:
-                await asyncio.to_thread(self.broker.close_position, symbol)
+                order = await asyncio.to_thread(self.broker.close_position, symbol)
                 unrealized = float(position.unrealized_pl)
+                self._record_order(
+                    order,
+                    side="SELL",
+                    symbol=symbol,
+                    reason=reason,
+                    requested_qty=float(position.qty),
+                    signal_price=current,
+                    approximate_pl=unrealized,
+                )
                 self.risk.record_closed_trade(unrealized)
                 self.guards.pop(symbol, None)
-                self.log("TRADE", "Paper exit submitted", symbol=symbol, reason=reason, approximate_pl=unrealized)
+                self.log(
+                    "TRADE",
+                    "Paper exit submitted",
+                    symbol=symbol,
+                    reason=reason,
+                    approximate_pl=unrealized,
+                    order_id=str(order.id),
+                )
 
     @staticmethod
     def _entry_session(now: datetime) -> bool:
@@ -177,6 +257,7 @@ class TradingEngine:
                 "max_exposure": self.config.max_exposure,
                 "daily_loss_limit": self.config.daily_loss_limit,
             },
+            "trade_journal": self.journal.status(),
             "signals": list(self.latest_signals.values()),
             "universe": {
                 "dynamic": self.config.dynamic_universe,
