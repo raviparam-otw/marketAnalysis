@@ -56,7 +56,11 @@ class RiskManager:
         notional = qty * entry_price
         return RiskDecision(True, "Risk checks passed", qty, notional, qty * risk_per_share)
 
-    def record_closed_trade(self, realized_pl: float) -> None:
+    def record_closed_trade(self, realized_pl: float, now: datetime | None = None) -> None:
+        # A close can be the first risk event seen after a process restart or
+        # during isolated/unit validation. Initialize the session before
+        # mutating counters so the next entry_check does not wipe them.
+        self.reset_session_if_needed(now)
         self.trades_today += 1
         self.realized_pl += realized_pl
         self.consecutive_losses = self.consecutive_losses + 1 if realized_pl < 0 else 0
