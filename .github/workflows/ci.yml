@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile Python modules
+        run: python -m compileall -q src validate.py run.py backtest.py
+
+      - name: Offline validation
+        env:
+          ALPACA_PAPER: "true"
+        run: PYTHONPATH=src python validate.py --no-pytest
+
+      - name: Unit tests
+        env:
+          ALPACA_PAPER: "true"
+        run: PYTHONPATH=src pytest -q
