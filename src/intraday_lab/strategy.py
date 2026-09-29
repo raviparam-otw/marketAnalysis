@@ -2,82 +2,107 @@ from __future__ import annotations
 
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-
 import pandas as pd
-
 from .models import Decision, Signal
-
 
 EASTERN = ZoneInfo("America/New_York")
 
 
+def _session_frame(bars: pd.DataFrame, now: datetime) -> pd.DataFrame:
+    frame = bars.copy().sort_index()
+    index = pd.DatetimeIndex(frame.index)
+    if index.tz is None:
+        index = index.tz_localize("UTC")
+    frame.index = index.tz_convert(EASTERN)
+    return frame[frame.index.date == now.date()]
+
+
+def _enrich(session: pd.DataFrame) -> pd.DataFrame:
+    frame = session.copy()
+    typical = (frame["high"] + frame["low"] + frame["close"]) / 3
+    cumvol = frame["volume"].cumsum().replace(0, pd.NA)
+    frame["vwap"] = (typical * frame["volume"]).cumsum() / cumvol
+    frame["avg_volume_20"] = frame["volume"].rolling(20, min_periods=5).mean().shift(1)
+    frame["relative_volume"] = frame["volume"] / frame["avg_volume_20"]
+    return frame
+
+
 class OpeningRangeVwapStrategy:
-    """Long-only opening-range breakout confirmed by VWAP and relative volume."""
+    """Model A: existing opening-range/VWAP strategy, preserved for A/B comparison."""
 
     def __init__(self, relative_volume_min: float = 1.5) -> None:
         self.relative_volume_min = relative_volume_min
 
-    @staticmethod
-    def enrich(bars: pd.DataFrame) -> pd.DataFrame:
-        frame = bars.copy().sort_index()
-        typical = (frame["high"] + frame["low"] + frame["close"]) / 3
-        cumulative_volume = frame["volume"].cumsum().replace(0, pd.NA)
-        frame["vwap"] = (typical * frame["volume"]).cumsum() / cumulative_volume
-        frame["avg_volume_20"] = frame["volume"].rolling(20, min_periods=5).mean().shift(1)
-        frame["relative_volume"] = frame["volume"] / frame["avg_volume_20"]
-        return frame
-
-    def evaluate(
-        self,
-        symbol: str,
-        bars: pd.DataFrame,
-        market_aligned: bool,
-        now: datetime | None = None,
-    ) -> Signal:
+    def evaluate(self, symbol: str, bars: pd.DataFrame, market_aligned: bool, now: datetime | None = None, catalyst: dict | None = None) -> Signal:
         now = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         if bars.empty or len(bars) < 20:
-            return self._hold(symbol, now, "Insufficient minute bars")
-
-        frame = self.enrich(bars)
-        local_index = pd.DatetimeIndex(frame.index)
-        if local_index.tz is None:
-            local_index = local_index.tz_localize("UTC")
-        frame.index = local_index.tz_convert(EASTERN)
-
-        session = frame[frame.index.date == now.date()]
+            return Signal(symbol, Decision.HOLD, 0, 0, 0, 0, market_aligned, "Insufficient minute bars", now)
+        session = _enrich(_session_frame(bars, now))
         opening = session.between_time("09:30", "09:44")
         if opening.empty:
-            return self._hold(symbol, now, "Opening range not available")
-
+            return Signal(symbol, Decision.HOLD, 0, 0, 0, 0, market_aligned, "Opening range not available", now)
         last = session.iloc[-1]
-        price = float(last["close"])
-        vwap = float(last["vwap"])
-        opening_high = float(opening["high"].max())
-        relative_volume = float(last["relative_volume"]) if pd.notna(last["relative_volume"]) else 0.0
-
-        within_entry_window = time(9, 45) <= now.time() <= time(14, 30)
+        price = float(last["close"]); vwap = float(last["vwap"]); opening_high = float(opening["high"].max())
+        rvol = float(last["relative_volume"]) if pd.notna(last["relative_volume"]) else 0.0
         conditions = {
-            "entry window": within_entry_window,
+            "entry window": time(9,45) <= now.time() <= time(14,30),
             "above opening range": price > opening_high,
             "above VWAP": price > vwap,
-            "relative volume": relative_volume >= self.relative_volume_min,
+            "relative volume": rvol >= self.relative_volume_min,
             "market alignment": market_aligned,
         }
-        failed = [name for name, passed in conditions.items() if not passed]
+        failed = [k for k,v in conditions.items() if not v]
+        stop = max(vwap, opening_high) * 0.997 if price > max(vwap, opening_high) else price * 0.975
         decision = Decision.BUY if not failed else Decision.HOLD
-        reason = "All breakout confirmations passed" if not failed else "Waiting for: " + ", ".join(failed)
-        return Signal(
-            symbol=symbol,
-            decision=decision,
-            price=price,
-            vwap=vwap,
-            opening_high=opening_high,
-            relative_volume=relative_volume,
-            market_aligned=market_aligned,
-            reason=reason,
-            timestamp=now,
-        )
+        return Signal(symbol, decision, price, vwap, opening_high, rvol, market_aligned,
+                      "All breakout confirmations passed" if not failed else "Waiting for: " + ", ".join(failed),
+                      now, setup="opening_range_breakout", stop_price=stop, score=rvol)
 
-    @staticmethod
-    def _hold(symbol: str, now: datetime, reason: str) -> Signal:
-        return Signal(symbol, Decision.HOLD, 0, 0, 0, 0, False, reason, now)
+
+class MomentumCatalystStrategy:
+    """Model B: public momentum concepts - gap/change, RVOL, catalyst and pullback/HOD continuation."""
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    def evaluate(self, symbol: str, bars: pd.DataFrame, market_aligned: bool, now: datetime | None = None, catalyst: dict | None = None) -> Signal:
+        now = (now or datetime.now(EASTERN)).astimezone(EASTERN)
+        if bars.empty or len(bars) < 20:
+            return Signal(symbol, Decision.HOLD, 0, 0, 0, 0, market_aligned, "Insufficient minute bars", now, setup="momentum")
+        session = _enrich(_session_frame(bars, now))
+        if len(session) < 6:
+            return Signal(symbol, Decision.HOLD, 0, 0, 0, 0, market_aligned, "Waiting for session structure", now, setup="momentum")
+        last = session.iloc[-1]
+        price = float(last["close"]); vwap = float(last["vwap"])
+        day_open = float(session.iloc[0]["open"])
+        previous_close = float(bars.iloc[-len(session)-1]["close"]) if len(bars) > len(session) else day_open
+        gap_pct = ((day_open / previous_close) - 1) * 100 if previous_close else 0.0
+        change_pct = ((price / previous_close) - 1) * 100 if previous_close else 0.0
+        rvol = float(last["relative_volume"]) if pd.notna(last["relative_volume"]) else 0.0
+        hod = float(session["high"].max())
+        prior5 = session.iloc[-6:-1]
+        pullback_low = float(prior5["low"].min())
+        recent_high = float(prior5["high"].max())
+        near_hod = price >= hod * 0.985
+        continuation = price > recent_high and float(last["close"]) > float(last["open"])
+        controlled_pullback = pullback_low > vwap * 0.985
+        catalyst_ok = bool(catalyst) or not self.config.momentum_require_news
+        conditions = {
+            "price range": self.config.min_price <= price <= self.config.momentum_max_price,
+            "gap/change": gap_pct >= self.config.momentum_gap_min_pct or change_pct >= self.config.momentum_change_min_pct,
+            "relative volume": rvol >= self.config.momentum_rvol_min,
+            "catalyst": catalyst_ok,
+            "above VWAP": price > vwap,
+            "near HOD": near_hod,
+            "pullback continuation": controlled_pullback and continuation,
+            "entry window": time(9,35) <= now.time() <= time(14,30),
+        }
+        failed = [k for k,v in conditions.items() if not v]
+        stop = min(pullback_low, vwap) if min(pullback_low, vwap) < price else price * 0.98
+        score = max(0, change_pct) + max(0, gap_pct) * .5 + min(rvol, 10) * 2 + (5 if catalyst else 0)
+        context = {"hod": hod, "pullback_low": pullback_low, "recent_high": recent_high}
+        return Signal(symbol, Decision.BUY if not failed else Decision.HOLD, price, vwap, hod, rvol, market_aligned,
+                      "Momentum catalyst continuation" if not failed else "Waiting for: " + ", ".join(failed),
+                      now, setup="momentum_pullback_hod", gap_pct=gap_pct, change_pct=change_pct,
+                      stop_price=stop, catalyst=bool(catalyst), catalyst_headline=(catalyst or {}).get("headline"),
+                      score=score, context=context)

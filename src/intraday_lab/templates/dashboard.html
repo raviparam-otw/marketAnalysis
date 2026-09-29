@@ -3,31 +3,37 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Alpaca Intraday Lab</title>
+  <title>Intraday Lab</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
-  <main class="shell">
-    <header>
-      <div><p class="eyebrow">CONTROLLED EXPERIMENT</p><h1>Alpaca Intraday Lab</h1></div>
-      <div class="paper-badge">PAPER ONLY</div>
-    </header>
-    {% if startup_error %}<section class="error"><strong>Connection error:</strong> {{ startup_error }}</section>{% endif %}
-    <section class="controls">
-      <button id="start">Start engine</button>
+<body data-view="{{ view }}">
+  <header class="topbar">
+    <div class="brand"><span class="brand-dot"></span><strong>Intraday Lab</strong><span class="paper-badge">PAPER ONLY</span></div>
+    <nav>
+      <a href="/" class="nav-link">Compare</a>
+      <a href="/model/A" class="nav-link">Model A</a>
+      <a href="/model/B" class="nav-link">Model B</a>
+      <a href="/trades" class="nav-link">Trades</a>
+    </nav>
+    <div class="controls">
+      <span id="state" class="state">Loading…</span>
+      <button id="start">Start both</button>
       <button id="stop" class="secondary">Stop</button>
-      <button id="kill" class="danger">Kill switch</button>
-      <span id="state">Loading…</span>
+      <button id="kill" class="danger">Kill</button>
+    </div>
+  </header>
+  {% if startup_error %}<div class="error"><strong>Connection error:</strong> {{ startup_error }}</div>{% endif %}
+
+  <main class="workspace">
+    <section id="compare-view" class="compare-grid">
+      <article class="model-panel" data-model="A"></article>
+      <article class="model-panel" data-model="B"></article>
     </section>
-    <section class="metrics">
-      <article><span>Equity</span><strong id="equity">—</strong></article>
-      <article><span>Cash</span><strong id="cash">—</strong></article>
-      <article><span>Target</span><strong id="target">—</strong></article>
-      <article><span>Exposure cap</span><strong id="exposure">—</strong></article>
+    <section id="single-view" class="single-view hidden"><article class="model-panel single" id="single-model"></article></section>
+    <section id="trades-view" class="hidden">
+      <div class="page-title"><div><h1>Trade comparison</h1><p>Actual fills and realized P&amp;L by model.</p></div><span id="trade-total"></span></div>
+      <div class="trade-grid"><article class="trade-panel"><h2>Model A</h2><div id="trades-a"></div></article><article class="trade-panel"><h2>Model B</h2><div id="trades-b"></div></article></div>
     </section>
-    <section class="panel"><h2>Latest signals</h2><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Decision</th><th>Price</th><th>VWAP</th><th>Rel. volume</th><th>Reason</th></tr></thead><tbody id="signals"><tr><td colspan="6">No scan yet.</td></tr></tbody></table></div></section>
-    <section class="panel"><h2>Activity</h2><div id="logs" class="logs"><p>Waiting for activity.</p></div></section>
-    <footer>Runs locally · Long-only · One position · No configured leverage</footer>
   </main>
   <script src="/static/app.js"></script>
 </body>
