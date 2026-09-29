@@ -8,13 +8,19 @@
 </head>
 <body data-view="{{ view }}">
   <header class="topbar">
-    <div class="brand"><span class="brand-dot"></span><strong>Intraday Lab</strong><span class="paper-badge">PAPER ONLY</span></div>
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <strong>Intraday Lab</strong>
+      <span class="paper-badge">PAPER ONLY</span>
+    </div>
+
     <nav>
-      <a href="/" class="nav-link">Compare</a>
-      <a href="/model/A" class="nav-link">Model A</a>
-      <a href="/model/B" class="nav-link">Model B</a>
-      <a href="/trades" class="nav-link">Trades</a>
+      <a href="/" class="nav-link {% if view == 'compare' %}active{% endif %}">Home</a>
+      <a href="/model/A" class="nav-link {% if view == 'A' %}active{% endif %}">Model A</a>
+      <a href="/model/B" class="nav-link {% if view == 'B' %}active{% endif %}">Model B</a>
+      <a href="/trades" class="nav-link {% if view == 'trades' %}active{% endif %}">Trades</a>
     </nav>
+
     <div class="controls">
       <span id="state" class="state">Loading…</span>
       <button id="start">Start both</button>
@@ -22,19 +28,36 @@
       <button id="kill" class="danger">Kill</button>
     </div>
   </header>
-  {% if startup_error %}<div class="error"><strong>Connection error:</strong> {{ startup_error }}</div>{% endif %}
+
+  {% if startup_error %}
+    <div class="error"><strong>Connection error:</strong> {{ startup_error }}</div>
+  {% endif %}
 
   <main class="workspace">
     <section id="compare-view" class="compare-grid">
       <article class="model-panel" data-model="A"></article>
       <article class="model-panel" data-model="B"></article>
     </section>
-    <section id="single-view" class="single-view hidden"><article class="model-panel single" id="single-model"></article></section>
+
+    <section id="single-view" class="single-view hidden">
+      <article class="model-panel single" id="single-model"></article>
+    </section>
+
     <section id="trades-view" class="hidden">
-      <div class="page-title"><div><h1>Trade comparison</h1><p>Actual fills and realized P&amp;L by model.</p></div><span id="trade-total"></span></div>
-      <div class="trade-grid"><article class="trade-panel"><h2>Model A</h2><div id="trades-a"></div></article><article class="trade-panel"><h2>Model B</h2><div id="trades-b"></div></article></div>
+      <div class="page-title">
+        <div>
+          <h1>Trade comparison</h1>
+          <p>Actual fills and realized P&amp;L by model.</p>
+        </div>
+        <span id="trade-total"></span>
+      </div>
+      <div class="trade-grid">
+        <article class="trade-panel"><h2>Model A</h2><div id="trades-a"></div></article>
+        <article class="trade-panel"><h2>Model B</h2><div id="trades-b"></div></article>
+      </div>
     </section>
   </main>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
