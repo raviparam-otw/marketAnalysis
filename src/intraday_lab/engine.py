@@ -128,8 +128,7 @@ class TradingEngine:
             raise RuntimeError("Alpaca reports trading as blocked for this PAPER account.")
 
         now = datetime.now(EASTERN)
-        self.session = self.session_store.create_or_load(account["equity"], now)
-        self._configure_allocations(self.session)
+        existing_session = self.session_store.load_today(now)
 
         open_orders = await asyncio.to_thread(self.broker.open_orders)
         if open_orders:
@@ -139,6 +138,16 @@ class TradingEngine:
             )
 
         positions = await asyncio.to_thread(self.broker.positions)
+        if positions and existing_session is None:
+            symbols = ", ".join(sorted(str(position.symbol) for position in positions))
+            raise RuntimeError(
+                "Cannot create a clean A/B session while pre-existing PAPER positions exist "
+                f"({symbols}). Use Emergency Flatten first."
+            )
+
+        self.session = existing_session or self.session_store.create_or_load(account["equity"], now)
+        self._configure_allocations(self.session)
+
         if positions:
             self._recover_positions(positions)
 
