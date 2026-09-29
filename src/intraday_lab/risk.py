@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
 from .config import Settings
+
 
 EASTERN = ZoneInfo("America/New_York")
 
@@ -18,13 +20,50 @@ class RiskDecision:
 
 
 class RiskManager:
-    def __init__(self, config: Settings, model: str = "A") -> None:
+    """Per-model risk ledger whose dollar limits scale from frozen session capital."""
+
+    def __init__(self, config: Settings, model: str = "A", capital: float | None = None) -> None:
         self.config = config
         self.model = model
+        self.session_capital = float(capital or 0.0)
         self.session_date = None
         self.realized_pl = 0.0
         self.trades_today = 0
+        self.wins_today = 0
+        self.losses_today = 0
         self.consecutive_losses = 0
+
+    def configure_session_capital(self, capital: float) -> None:
+        if capital <= 0:
+            raise ValueError("Session capital must be positive.")
+        self.session_capital = float(capital)
+
+    @property
+    def capital(self) -> float:
+        if self.session_capital > 0:
+            return self.session_capital
+        # Compatibility fallback for tests/backtest helpers. Live TradingEngine always configures this.
+        return float(self.config.model_capital or (self.config.starting_balance / 2.0))
+
+    @property
+    def risk_budget(self) -> float:
+        return round(self.capital * self.config.risk_per_trade_pct, 2)
+
+    @property
+    def max_position_notional(self) -> float:
+        return round(self.capital * self.config.max_position_pct, 2)
+
+    @property
+    def daily_loss_limit(self) -> float:
+        return round(self.capital * self.config.daily_loss_pct, 2)
+
+    @property
+    def model_equity(self) -> float:
+        return max(0.0, self.capital + self.realized_pl)
+
+    @property
+    def remaining_daily_loss(self) -> float:
+        return max(0.0, self.daily_loss_limit + min(0.0, self.realized_pl))
 
     def reset_session_if_needed(self, now: datetime | None = None) -> None:
         today = (now or datetime.now(EASTERN)).astimezone(EASTERN).date()
@@ -32,9 +71,37 @@ class RiskManager:
             self.session_date = today
             self.realized_pl = 0.0
             self.trades_today = 0
+            self.wins_today = 0
+            self.losses_today = 0
             self.consecutive_losses = 0
 
-    def entry_check(self, entry_price: float, stop_price: float, has_position: bool, now: datetime | None = None) -> RiskDecision:
+    def load_performance(
+        self,
+        *,
+        realized_pl: float,
+        closed_trades: int,
+        wins: int,
+        losses: int,
+        consecutive_losses: int,
+        now: datetime | None = None,
+    ) -> None:
+        self.reset_session_if_needed(now)
+        self.realized_pl = float(realized_pl)
+        self.trades_today = int(closed_trades)
+        self.wins_today = int(wins)
+        self.losses_today = int(losses)
+        self.consecutive_losses = int(consecutive_losses)
+
+    def entry_check(
+        self,
+        entry_price: float,
+        stop_price: float,
+        has_position: bool,
+        now: datetime | None = None,
+        *,
+        available_cash: float | None = None,
+        global_room: float | None = None,
+    ) -> RiskDecision:
         self.reset_session_if_needed(now)
         if has_position:
             return RiskDecision(False, "Model already has an open position")
@@ -42,28 +109,45 @@ class RiskManager:
             return RiskDecision(False, "Maximum trades per day reached")
         if self.consecutive_losses >= self.config.max_consecutive_losses:
             return RiskDecision(False, "Consecutive-loss limit reached")
-        if self.realized_pl <= -self.config.daily_loss_limit:
-            return RiskDecision(False, "Daily loss limit reached")
+        if self.realized_pl <= -self.daily_loss_limit:
+            return RiskDecision(False, "Daily model loss limit reached")
+
         risk_per_share = entry_price - stop_price
         if entry_price <= 0 or risk_per_share <= 0:
             return RiskDecision(False, "Invalid entry/stop relationship")
-        by_risk = self.config.risk_per_trade / risk_per_share
-        by_notional = self.config.max_position_notional / entry_price
-        by_capital = self.config.model_capital / entry_price
-        qty = max(0.0, min(by_risk, by_notional, by_capital))
+
+        by_risk = self.risk_budget / risk_per_share
+        notional_room = min(self.max_position_notional, self.model_equity)
+        if available_cash is not None:
+            notional_room = min(notional_room, max(0.0, float(available_cash)))
+        if global_room is not None:
+            notional_room = min(notional_room, max(0.0, float(global_room)))
+        by_notional = notional_room / entry_price
+
+        qty = max(0.0, min(by_risk, by_notional))
         if qty < 0.001:
-            return RiskDecision(False, "Calculated position is too small")
+            return RiskDecision(False, "No portfolio or global exposure room available")
+
         notional = qty * entry_price
-        return RiskDecision(True, "Risk checks passed", qty, notional, qty * risk_per_share)
+        return RiskDecision(
+            True,
+            "Risk checks passed",
+            quantity=qty,
+            notional=notional,
+            dollars_at_risk=qty * risk_per_share,
+        )
 
     def record_closed_trade(self, realized_pl: float, now: datetime | None = None) -> None:
-        # A close can be the first risk event seen after a process restart or
-        # during isolated/unit validation. Initialize the session before
-        # mutating counters so the next entry_check does not wipe them.
         self.reset_session_if_needed(now)
         self.trades_today += 1
         self.realized_pl += realized_pl
-        self.consecutive_losses = self.consecutive_losses + 1 if realized_pl < 0 else 0
+        if realized_pl < 0:
+            self.losses_today += 1
+            self.consecutive_losses += 1
+        else:
+            if realized_pl > 0:
+                self.wins_today += 1
+            self.consecutive_losses = 0
 
     def exit_reason(self, entry: float, current: float, high: float, stop_price: float) -> str | None:
         if current <= stop_price:
@@ -72,6 +156,7 @@ class RiskManager:
         if pnl_pct >= self.config.take_profit_pct:
             return "take_profit"
         if (high - entry) / entry >= self.config.trail_trigger_pct:
-            if current <= high * (1 - self.config.trail_distance_pct):
+            trailing = high * (1 - self.config.trail_distance_pct)
+            if current <= trailing:
                 return "trailing_stop"
         return None

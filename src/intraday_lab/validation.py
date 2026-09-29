@@ -4,7 +4,7 @@ import importlib
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,10 +14,12 @@ import numpy as np
 import pandas as pd
 
 from .config import Settings, settings
+from .experiment import ExperimentSessionStore
 from .journal import TradeJournal
 from .models import Decision
 from .risk import RiskManager
 from .strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
+
 
 EASTERN = ZoneInfo("America/New_York")
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,17 +39,26 @@ def _paper_config() -> Settings:
         paper=True,
         starting_balance=100_000,
         model_capital=50_000,
-        risk_per_trade=250,
-        max_position_notional=12_500,
+        risk_per_trade_pct=0.005,
+        max_position_pct=0.25,
+        daily_loss_pct=0.02,
         momentum_require_news=True,
     )
 
 
 def _bars_for_model_a() -> pd.DataFrame:
     index = pd.date_range("2026-09-25 09:30", periods=25, freq="min", tz=EASTERN)
-    close = np.concatenate([np.full(20, 100.0), np.array([100.2, 100.4, 100.7, 101.0, 102.0])])
+    close = np.concatenate(
+        [np.full(20, 100.0), np.array([100.2, 100.4, 100.7, 101.0, 102.0])]
+    )
     return pd.DataFrame(
-        {"open": close-.1, "high": close+.1, "low": close-.2, "close": close, "volume":[100]*24+[1000]},
+        {
+            "open": close - 0.1,
+            "high": close + 0.1,
+            "low": close - 0.2,
+            "close": close,
+            "volume": [100] * 24 + [1000],
+        },
         index=index,
     )
 
@@ -56,11 +67,17 @@ def _bars_for_model_b() -> pd.DataFrame:
     prior = pd.date_range("2026-09-24 15:59", periods=1, freq="min", tz=EASTERN)
     session = pd.date_range("2026-09-25 09:30", periods=25, freq="min", tz=EASTERN)
     index = prior.append(session)
-    close = [8.00] + [9.00]*18 + [9.05,9.10,9.12,9.14,9.16,9.20,9.35]
-    volume = [100] + [100]*24 + [1000]
-    arr=np.array(close,dtype=float)
+    close = [8.00] + [9.00] * 18 + [9.05, 9.10, 9.12, 9.14, 9.16, 9.20, 9.35]
+    volume = [100] + [100] * 24 + [1000]
+    arr = np.array(close, dtype=float)
     return pd.DataFrame(
-        {"open":arr-.03,"high":arr+.04,"low":arr-.05,"close":arr,"volume":volume},
+        {
+            "open": arr - 0.03,
+            "high": arr + 0.04,
+            "low": arr - 0.05,
+            "close": arr,
+            "volume": volume,
+        },
         index=index,
     )
 
@@ -68,7 +85,19 @@ def _bars_for_model_b() -> pd.DataFrame:
 def offline_checks() -> list[Check]:
     checks: list[Check] = []
 
-    for module in ("config","models","universe","strategy","risk","journal","news","broker","engine","app"):
+    for module in (
+        "config",
+        "models",
+        "experiment",
+        "universe",
+        "strategy",
+        "risk",
+        "journal",
+        "news",
+        "broker",
+        "engine",
+        "app",
+    ):
         try:
             importlib.import_module(f"intraday_lab.{module}")
             checks.append(Check(f"import:{module}", True, "ok"))
@@ -83,44 +112,132 @@ def offline_checks() -> list[Check]:
         checks.append(Check("paper-safety-config", False, str(exc)))
 
     try:
-        risk = RiskManager(_paper_config(), "B")
-        decision = risk.entry_check(10.0, 9.5, False, datetime(2026,9,25,10,0,tzinfo=EASTERN))
-        passed = decision.allowed and round(decision.quantity,6)==500 and round(decision.dollars_at_risk,2)==250
-        checks.append(Check("risk-based-sizing", passed, f"qty={decision.quantity:.2f}, risk={decision.dollars_at_risk:.2f}, notional={decision.notional:.2f}"))
+        with tempfile.TemporaryDirectory() as directory:
+            store = ExperimentSessionStore(directory)
+            now = datetime(2026, 9, 28, 9, 20, tzinfo=EASTERN)
+            session = store.create_or_load(83_421.17, now)
+            total = round(session.allocations["A"] + session.allocations["B"], 2)
+            passed = (
+                total == 83_421.17
+                and abs(session.allocations["A"] - session.allocations["B"]) <= 0.01
+            )
+            checks.append(
+                Check(
+                    "dynamic-50-50-split",
+                    passed,
+                    f"A={session.allocations['A']:.2f}, B={session.allocations['B']:.2f}",
+                )
+            )
     except Exception as exc:
-        checks.append(Check("risk-based-sizing", False, str(exc)))
+        checks.append(Check("dynamic-50-50-split", False, str(exc)))
+
+    try:
+        risk = RiskManager(_paper_config(), "B", capital=40_000)
+        decision = risk.entry_check(
+            10.0,
+            9.5,
+            False,
+            datetime(2026, 9, 25, 10, 0, tzinfo=EASTERN),
+        )
+        passed = (
+            decision.allowed
+            and round(decision.quantity, 6) == 400
+            and round(decision.dollars_at_risk, 2) == 200
+        )
+        checks.append(
+            Check(
+                "scaled-risk-sizing",
+                passed,
+                f"capital=40000 qty={decision.quantity:.2f}, "
+                f"risk={decision.dollars_at_risk:.2f}, notional={decision.notional:.2f}",
+            )
+        )
+    except Exception as exc:
+        checks.append(Check("scaled-risk-sizing", False, str(exc)))
 
     try:
         signal = OpeningRangeVwapStrategy(1.5).evaluate(
-            "TESTA", _bars_for_model_a(), True, datetime(2026,9,25,9,54,tzinfo=EASTERN)
+            "TESTA",
+            _bars_for_model_a(),
+            True,
+            datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN),
         )
-        checks.append(Check("model-a-signal", signal.decision == Decision.BUY, f"{signal.decision}: {signal.reason}"))
+        checks.append(
+            Check(
+                "model-a-signal",
+                signal.decision == Decision.BUY,
+                f"{signal.decision}: {signal.reason}",
+            )
+        )
     except Exception as exc:
         checks.append(Check("model-a-signal", False, str(exc)))
 
     try:
         cfg = _paper_config()
-        catalyst={"headline":"Validation catalyst"}
+        catalyst = {"headline": "Validation catalyst"}
         signal = MomentumCatalystStrategy(cfg).evaluate(
-            "TESTB", _bars_for_model_b(), True, datetime(2026,9,25,9,54,tzinfo=EASTERN), catalyst
+            "TESTB",
+            _bars_for_model_b(),
+            True,
+            datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN),
+            catalyst,
         )
-        checks.append(Check("model-b-pipeline", signal.price>0 and signal.catalyst and signal.setup=="momentum_pullback_hod",
-                            f"{signal.decision}: gap={signal.gap_pct:.2f}% change={signal.change_pct:.2f}% rvol={signal.relative_volume:.2f}"))
+        checks.append(
+            Check(
+                "model-b-pipeline",
+                signal.price > 0
+                and signal.catalyst
+                and signal.setup == "momentum_pullback_hod",
+                f"{signal.decision}: gap={signal.gap_pct:.2f}% "
+                f"change={signal.change_pct:.2f}% rvol={signal.relative_volume:.2f}",
+            )
+        )
     except Exception as exc:
         checks.append(Check("model-b-pipeline", False, str(exc)))
 
     try:
         with tempfile.TemporaryDirectory() as directory:
-            journal=TradeJournal(directory,now_fn=lambda:datetime(2026,9,28,10,15,tzinfo=EASTERN))
-            def order(oid,side_price):
-                return SimpleNamespace(id=oid,client_order_id=f"v-{oid}",status="filled",
-                    submitted_at=datetime(2026,9,28,10,15,tzinfo=EASTERN),filled_qty="100",
-                    filled_avg_price=str(side_price),filled_at=datetime(2026,9,28,10,15,tzinfo=EASTERN))
-            journal.record_order(order("buy",10.10),model="A",side="BUY",symbol="VAL",reason="validation",requested_qty=100)
-            journal.record_order(order("sell",9.90),model="A",side="SELL",symbol="VAL",reason="validation",requested_qty=100)
-            result=journal.status()
-            pnl=result["summary"]["models"]["A"]["realized_pl"]
-            checks.append(Check("actual-fill-pnl", pnl == -20.0, f"realized P&L={pnl}"))
+            journal = TradeJournal(
+                directory,
+                now_fn=lambda: datetime(2026, 9, 28, 10, 15, tzinfo=EASTERN),
+            )
+
+            def order(order_id, price):
+                return SimpleNamespace(
+                    id=order_id,
+                    client_order_id=f"v-{order_id}",
+                    status="filled",
+                    submitted_at=datetime(2026, 9, 28, 10, 15, tzinfo=EASTERN),
+                    filled_qty="100",
+                    filled_avg_price=str(price),
+                    filled_at=datetime(2026, 9, 28, 10, 15, tzinfo=EASTERN),
+                )
+
+            journal.record_order(
+                order("buy", 10.10),
+                model="A",
+                side="BUY",
+                symbol="VAL",
+                reason="validation",
+                trade_id="A-validation",
+                session_id="validation-session",
+                requested_qty=100,
+            )
+            journal.record_order(
+                order("sell", 9.90),
+                model="A",
+                side="SELL",
+                symbol="VAL",
+                reason="validation",
+                trade_id="A-validation",
+                session_id="validation-session",
+                requested_qty=100,
+            )
+            result = journal.status()
+            pnl = result["summary"]["models"]["A"]["realized_pl"]
+            checks.append(
+                Check("actual-fill-pnl", pnl == -20.0, f"realized P&L={pnl}")
+            )
     except Exception as exc:
         checks.append(Check("actual-fill-pnl", False, str(exc)))
 
@@ -134,13 +251,13 @@ def run_pytest() -> Check:
         text=True,
         capture_output=True,
     )
-    output=(proc.stdout + "\n" + proc.stderr).strip()
-    tail=" | ".join(output.splitlines()[-4:]) if output else "no output"
+    output = (proc.stdout + "\n" + proc.stderr).strip()
+    tail = " | ".join(output.splitlines()[-4:]) if output else "no output"
     return Check("unit-tests", proc.returncode == 0, tail)
 
 
 def alpaca_checks() -> list[Check]:
-    checks=[]
+    checks = []
     try:
         settings.validate(require_credentials=True)
         checks.append(Check("local-env", True, "paper credentials and safety lock valid"))
@@ -149,45 +266,61 @@ def alpaca_checks() -> list[Check]:
 
     try:
         from .broker import PaperBroker
-        broker=PaperBroker(settings)
-        account=broker.account_snapshot()
-        checks.append(Check("alpaca-paper-account", not account.get("trading_blocked",False),
-                            f"connected; equity={account.get('equity',0):,.2f}; status={account.get('status')}"))
+
+        broker = PaperBroker(settings)
+        account = broker.account_snapshot()
+        checks.append(
+            Check(
+                "alpaca-paper-account",
+                not account.get("trading_blocked", False),
+                f"connected; equity={account.get('equity', 0):,.2f}; "
+                f"status={account.get('status')}",
+            )
+        )
+        split = account["equity"] / 2
+        checks.append(
+            Check(
+                "alpaca-allocation-preview",
+                account["equity"] > 0,
+                f"current equity={account['equity']:.2f}; each model≈{split:.2f}",
+            )
+        )
     except Exception as exc:
         checks.append(Check("alpaca-paper-account", False, str(exc)))
 
     try:
         from .broker import PaperBroker
-        broker=PaperBroker(settings)
-        bars=broker.minute_bars(["SPY"],lookback_hours=2)
-        count=len(bars.get("SPY",[]))
-        checks.append(Check("alpaca-market-data", count>0, f"SPY bars returned={count}"))
+
+        broker = PaperBroker(settings)
+        bars = broker.minute_bars(["SPY"], lookback_hours=2)
+        count = len(bars.get("SPY", []))
+        checks.append(Check("alpaca-market-data", count > 0, f"SPY bars returned={count}"))
     except Exception as exc:
         checks.append(Check("alpaca-market-data", False, str(exc)))
     return checks
 
 
-def run(include_pytest: bool=True, include_alpaca: bool=False) -> dict:
-    checks=offline_checks()
+def run(include_pytest: bool = True, include_alpaca: bool = False) -> dict:
+    checks = offline_checks()
     if include_pytest:
         checks.append(run_pytest())
     if include_alpaca:
         checks.extend(alpaca_checks())
-    passed=sum(c.passed for c in checks)
+    passed = sum(check.passed for check in checks)
     return {
         "passed": passed,
-        "failed": len(checks)-passed,
-        "ok": all(c.passed for c in checks),
-        "checks":[asdict(c) for c in checks],
+        "failed": len(checks) - passed,
+        "ok": all(check.passed for check in checks),
+        "checks": [asdict(check) for check in checks],
     }
 
 
 def print_report(report: dict) -> None:
     print("\nIntraday Lab validation")
-    print("="*72)
+    print("=" * 72)
     for check in report["checks"]:
-        icon="PASS" if check["passed"] else "FAIL"
+        icon = "PASS" if check["passed"] else "FAIL"
         print(f"[{icon}] {check['name']:<24} {check['detail']}")
-    print("-"*72)
+    print("-" * 72)
     print(f"Passed: {report['passed']}   Failed: {report['failed']}")
     print("RESULT:", "READY" if report["ok"] else "NOT READY")

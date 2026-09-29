@@ -8,147 +8,772 @@ from uuid import uuid4
 
 from .broker import PaperBroker
 from .config import Settings
+from .experiment import ExperimentSession, ExperimentSessionStore
 from .journal import TradeJournal
 from .models import Decision, PositionGuard
 from .news import AlpacaNewsService
 from .risk import RiskManager
 from .strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
 
-EASTERN=ZoneInfo("America/New_York")
+
+EASTERN = ZoneInfo("America/New_York")
 
 
 class ModelRuntime:
-    def __init__(self,name:str,label:str,strategy,risk:RiskManager) -> None:
-        self.name=name; self.label=label; self.strategy=strategy; self.risk=risk
-        self.logs=deque(maxlen=250); self.latest_signals={}; self.guards:dict[str,PositionGuard]={}
-        self.realized_pl=0.0; self.last_trade_pl=0.0
+    def __init__(self, name: str, role: str, label: str, strategy, risk: RiskManager) -> None:
+        self.name = name
+        self.role = role
+        self.label = label
+        self.strategy = strategy
+        self.risk = risk
+        self.logs: deque[dict] = deque(maxlen=300)
+        self.latest_signals: dict[str, dict] = {}
+        self.guards: dict[str, PositionGuard] = {}
+        self.realized_pl = 0.0
+        self.unrealized_pl = 0.0
+        self.peak_equity = 0.0
+        self.last_scan_log_at: datetime | None = None
 
-    def log(self,level:str,message:str,**details)->None:
-        self.logs.appendleft({"time":datetime.now(EASTERN).isoformat(timespec="seconds"),"level":level,"message":message,"details":details})
+    @property
+    def capital(self) -> float:
+        return self.risk.capital
+
+    @property
+    def equity(self) -> float:
+        return self.capital + self.realized_pl + self.unrealized_pl
+
+    @property
+    def return_pct(self) -> float:
+        return ((self.equity / self.capital) - 1) * 100 if self.capital else 0.0
+
+    @property
+    def drawdown_pct(self) -> float:
+        peak = max(self.peak_equity, self.capital)
+        return ((peak - self.equity) / peak) * 100 if peak else 0.0
+
+    def refresh_peak(self) -> None:
+        self.peak_equity = max(self.peak_equity, self.equity, self.capital)
+
+    def log(self, level: str, message: str, **details) -> None:
+        self.logs.appendleft(
+            {
+                "time": datetime.now(EASTERN).isoformat(timespec="seconds"),
+                "level": level,
+                "message": message,
+                "details": details,
+            }
+        )
 
 
 class TradingEngine:
-    """Single paper-only orchestrator running Model A and Model B against the same market session."""
-    def __init__(self,config:Settings,broker:PaperBroker)->None:
-        self.config=config; self.broker=broker; self.journal=TradeJournal(config.trade_log_dir)
-        self.news=AlpacaNewsService(config.api_key,config.secret_key)
-        self.models={
-            "A":ModelRuntime("A","Opening Range / VWAP",OpeningRangeVwapStrategy(config.relative_volume_min),RiskManager(config,"A")),
-            "B":ModelRuntime("B","Momentum Catalyst",MomentumCatalystStrategy(config),RiskManager(config,"B")),
+    """Paper-only dual-model experiment with frozen daily 50/50 virtual allocations."""
+
+    def __init__(self, config: Settings, broker: PaperBroker) -> None:
+        self.config = config
+        self.broker = broker
+        self.journal = TradeJournal(config.trade_log_dir)
+        self.session_store = ExperimentSessionStore(config.trade_log_dir)
+        self.session: ExperimentSession | None = self.session_store.load_today()
+        self.news = AlpacaNewsService(config.api_key, config.secret_key)
+
+        self.models = {
+            "A": ModelRuntime(
+                "A",
+                "CONTROL",
+                "Opening Range / VWAP",
+                OpeningRangeVwapStrategy(config.relative_volume_min),
+                RiskManager(config, "A"),
+            ),
+            "B": ModelRuntime(
+                "B",
+                "CHALLENGER",
+                "Momentum Catalyst",
+                MomentumCatalystStrategy(config),
+                RiskManager(config, "B"),
+            ),
         }
-        self.running=False; self.task=None; self.last_account={}; self.universe=list(config.watchlist); self.universe_stats={}; self.universe_refreshed_at=None
 
-    async def start(self)->None:
-        if self.running:return
-        self.config.validate(); path=self.journal.ensure_today(); self.running=True; self.task=asyncio.create_task(self._loop())
-        for m in self.models.values():m.log("INFO","Model started",capital=self.config.model_capital,trade_log=str(path))
+        self.running = False
+        self.entries_paused = False
+        self.draining = False
+        self.task: asyncio.Task | None = None
+        self.last_account: dict = {}
+        self.last_positions: list = []
+        self.last_cycle_at: datetime | None = None
+        self.last_cycle_error: str | None = None
+        self.cycle_count = 0
 
-    async def stop(self)->None:
-        self.running=False; task=self.task; self.task=None
+        self.universe: list[str] = list(config.watchlist)
+        self.universe_stats: dict[str, int] = {}
+        self.universe_refreshed_at: datetime | None = None
+
+        if self.session:
+            self._configure_allocations(self.session)
+
+    def _configure_allocations(self, session: ExperimentSession) -> None:
+        for name, model in self.models.items():
+            capital = float(session.allocations.get(name, 0.0))
+            model.risk.configure_session_capital(capital)
+            model.peak_equity = max(model.peak_equity, capital)
+
+    async def start(self) -> None:
+        if self.running:
+            return
+
+        self.config.validate()
+        await self._sync_journal_orders()
+
+        account = await asyncio.to_thread(self.broker.account_snapshot)
+        if account.get("trading_blocked"):
+            raise RuntimeError("Alpaca reports trading as blocked for this PAPER account.")
+
+        now = datetime.now(EASTERN)
+        self.session = self.session_store.create_or_load(account["equity"], now)
+        self._configure_allocations(self.session)
+
+        open_orders = await asyncio.to_thread(self.broker.open_orders)
+        if open_orders:
+            raise RuntimeError(
+                f"Cannot start with {len(open_orders)} open Alpaca order(s). "
+                "Wait for them to finish or use Emergency Flatten."
+            )
+
+        positions = await asyncio.to_thread(self.broker.positions)
+        if positions:
+            self._recover_positions(positions)
+
+        self.last_account = account
+        self.last_positions = positions
+        self.entries_paused = False
+        self.draining = False
+        self.running = True
+        self.last_cycle_error = None
+        self.session_store.set_state(self.session, "RUNNING", now)
+
+        path = self.journal.ensure_today()
+        for model in self.models.values():
+            model.log(
+                "INFO",
+                "Session started",
+                role=model.role,
+                allocation=round(model.capital, 2),
+                risk_per_trade=model.risk.risk_budget,
+                max_position=model.risk.max_position_notional,
+                daily_loss_limit=model.risk.daily_loss_limit,
+                trade_log=str(path),
+            )
+
+        self.task = asyncio.create_task(self._loop())
+
+    def _recover_positions(self, positions: list) -> None:
+        open_trades = self.journal.open_trades()
+        recovered_symbols: set[str] = set()
+
+        for position in positions:
+            symbol = str(position.symbol).upper()
+            candidates = [
+                row for row in open_trades
+                if str(row.get("symbol", "")).upper() == symbol
+                and row.get("model") in self.models
+            ]
+            if not candidates:
+                raise RuntimeError(
+                    f"Existing PAPER position {symbol} is not attributable to Model A/B. "
+                    "Use Emergency Flatten before starting a clean experiment."
+                )
+
+            row = candidates[-1]
+            model = self.models[row["model"]]
+            context = row.get("signal_context") or {}
+            entry = float(position.avg_entry_price)
+            stop = float(context.get("stop_price") or (entry * (1 - self.config.stop_loss_pct)))
+            qty = abs(float(position.qty))
+            entered_raw = row.get("filled_at") or row.get("recorded_at")
+            try:
+                entered_at = datetime.fromisoformat(str(entered_raw))
+                if entered_at.tzinfo is None:
+                    entered_at = entered_at.replace(tzinfo=EASTERN)
+            except Exception:
+                entered_at = datetime.now(EASTERN)
+
+            trade_id = row.get("trade_id") or f"recovered-{model.name}-{uuid4().hex[:10]}"
+            model.guards[symbol] = PositionGuard(
+                model=model.name,
+                symbol=symbol,
+                trade_id=trade_id,
+                entry_price=entry,
+                quantity=qty,
+                high_watermark=max(entry, float(position.current_price)),
+                stop_price=stop,
+                entered_at=entered_at,
+                current_price=float(position.current_price),
+                unrealized_pl=float(position.unrealized_pl),
+            )
+            recovered_symbols.add(symbol)
+            model.log("WARN", "Recovered open PAPER position after restart", symbol=symbol, qty=qty)
+
+        if len(recovered_symbols) != len(positions):
+            raise RuntimeError("Not all existing PAPER positions could be recovered safely.")
+
+    async def pause_entries(self) -> None:
+        if not self.running:
+            raise RuntimeError("Engine is not running.")
+        if self.draining:
+            raise RuntimeError("Engine is already draining.")
+        self.entries_paused = True
+        if self.session:
+            self.session_store.set_state(self.session, "PAUSED")
+        for model in self.models.values():
+            model.log("CONTROL", "New entries paused; open positions remain managed")
+
+    async def resume_entries(self) -> None:
+        if not self.running:
+            raise RuntimeError("Engine is not running.")
+        if self.draining:
+            raise RuntimeError("Cannot resume while Drain & Stop is active.")
+        self.entries_paused = False
+        if self.session:
+            self.session_store.set_state(self.session, "RUNNING")
+        for model in self.models.values():
+            model.log("CONTROL", "New entries resumed")
+
+    async def request_drain(self) -> None:
+        if not self.running:
+            return
+        self.entries_paused = True
+        self.draining = True
+        if self.session:
+            self.session_store.set_state(self.session, "DRAINING")
+        for model in self.models.values():
+            model.log(
+                "CONTROL",
+                "Drain & Stop requested",
+                detail="No new entries; existing positions continue to be managed until flat.",
+            )
+
+    async def shutdown(self) -> None:
+        """Application lifecycle stop. Does not intentionally submit orders."""
+        self.running = False
+        task = self.task
+        self.task = None
         if task and task is not asyncio.current_task():
             task.cancel()
-            try: await task
-            except asyncio.CancelledError: pass
-        await self._sync_journal_orders()
-        for m in self.models.values():m.log("INFO","Model stopped")
-
-    async def kill_switch(self)->None:
-        await self.stop()
-        try: await asyncio.to_thread(self.broker.cancel_open_orders)
-        except Exception as exc:
-            for m in self.models.values():m.log("ERROR","Could not cancel open orders",error=str(exc))
-        try: await asyncio.to_thread(self.broker.close_all)
-        except Exception as exc:
-            for m in self.models.values():m.log("ERROR","Could not close all paper positions",error=str(exc))
-        for m in self.models.values(): m.guards.clear(); m.log("WARN","Kill switch executed")
-
-    async def _loop(self)->None:
-        while self.running:
-            try: await self.run_cycle()
-            except Exception as exc:
-                for m in self.models.values():m.log("ERROR","Cycle failed",error=str(exc))
-            await asyncio.sleep(self.config.poll_seconds)
-
-    async def run_cycle(self)->None:
-        now=datetime.now(EASTERN); await self._sync_journal_orders(); self.last_account=await asyncio.to_thread(self.broker.account_snapshot)
-        positions=await asyncio.to_thread(self.broker.positions); position_map={p.symbol:p for p in positions}
-        for model in self.models.values(): await self._manage_model_position(model,position_map,now)
-        if not self._entry_session(now): return
-        await self._refresh_universe_if_needed(now)
-        symbols=list(dict.fromkeys([*self.universe,"SPY","QQQ"])); bars=await asyncio.to_thread(self.broker.minute_bars,symbols)
-        market_aligned=self._market_alignment(bars)
-        await asyncio.to_thread(self.news.refresh,self.universe)
-        locked={s for model in self.models.values() for s in model.guards}
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        try:
+            await self._sync_journal_orders()
+        except Exception:
+            pass
         for model in self.models.values():
-            if model.guards: continue
-            candidates=[]
+            model.log("WARN", "Application process stopped")
+
+    async def kill_switch(self) -> None:
+        """Emergency action: stop scanning, cancel orders, and flatten PAPER positions."""
+        self.entries_paused = True
+        self.draining = False
+        self.running = False
+
+        task = self.task
+        self.task = None
+        if task and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            await asyncio.to_thread(self.broker.cancel_open_orders)
+        except Exception as exc:
+            for model in self.models.values():
+                model.log("ERROR", "Could not cancel open orders", error=str(exc))
+
+        positions = await asyncio.to_thread(self.broker.positions)
+        for position in positions:
+            symbol = str(position.symbol).upper()
+            guard_owner = next(
+                (
+                    model for model in self.models.values()
+                    if symbol in model.guards
+                ),
+                None,
+            )
+            try:
+                if guard_owner:
+                    guard = guard_owner.guards[symbol]
+                    qty = min(abs(float(position.qty)), guard.quantity)
+                    order = await asyncio.to_thread(
+                        self.broker.sell_qty,
+                        symbol,
+                        qty,
+                        f"model-{guard_owner.name.lower()}-flat-{uuid4().hex[:14]}",
+                    )
+                    self.journal.record_order(
+                        order,
+                        model=guard_owner.name,
+                        side="SELL",
+                        symbol=symbol,
+                        reason="emergency_flatten",
+                        trade_id=guard.trade_id,
+                        session_id=self.session.session_id if self.session else None,
+                        requested_qty=qty,
+                        signal_price=float(position.current_price),
+                        signal_context={
+                            "entry": guard.entry_price,
+                            "stop": guard.stop_price,
+                            "high_watermark": guard.high_watermark,
+                        },
+                    )
+                    guard.exit_pending = True
+                    guard_owner.log("WARN", "Emergency flatten submitted", symbol=symbol, qty=qty)
+                else:
+                    await asyncio.to_thread(self.broker.close_position, symbol)
+            except Exception as exc:
+                for model in self.models.values():
+                    model.log("ERROR", "Emergency flatten failed", symbol=symbol, error=str(exc))
+
+        if self.session:
+            self.session_store.set_state(self.session, "FLATTENING")
+        await self._sync_journal_orders()
+
+    async def _loop(self) -> None:
+        while self.running:
+            cycle_started = datetime.now(EASTERN)
+            try:
+                await self.run_cycle()
+                self.last_cycle_error = None
+            except Exception as exc:
+                self.last_cycle_error = str(exc)
+                for model in self.models.values():
+                    model.log("ERROR", "Cycle failed", error=str(exc))
+            self.last_cycle_at = cycle_started
+            self.cycle_count += 1
+            if self.running:
+                await asyncio.sleep(self.config.poll_seconds)
+
+    async def run_cycle(self) -> None:
+        now = datetime.now(EASTERN)
+        await self._sync_journal_orders()
+
+        account = await asyncio.to_thread(self.broker.account_snapshot)
+        positions = await asyncio.to_thread(self.broker.positions)
+        self.last_account = account
+        self.last_positions = positions
+        position_map = {str(position.symbol).upper(): position for position in positions}
+
+        for model in self.models.values():
+            await self._manage_model_position(model, position_map, now)
+
+        # A guard remains until Alpaca no longer reports the position.
+        for model in self.models.values():
+            for symbol, guard in list(model.guards.items()):
+                position = position_map.get(symbol)
+                if position is None and guard.exit_pending:
+                    model.guards.pop(symbol, None)
+                    model.log("TRADE", "Position confirmed closed", symbol=symbol)
+
+        self._refresh_model_marks(position_map)
+
+        if self.draining:
+            experiment_positions = any(model.guards for model in self.models.values())
+            if not experiment_positions and not positions:
+                self.running = False
+                self.draining = False
+                if self.session:
+                    self.session_store.set_state(self.session, "STOPPED", now)
+                for model in self.models.values():
+                    model.log("CONTROL", "Drain complete; engine stopped flat")
+            return
+
+        if self.entries_paused or not self._entry_session(now):
+            return
+
+        await self._refresh_universe_if_needed(now)
+        symbols = list(dict.fromkeys([*self.universe, "SPY", "QQQ"]))
+        bars = await asyncio.to_thread(self.broker.minute_bars, symbols)
+        market_aligned = self._market_alignment(bars)
+        await asyncio.to_thread(self.news.refresh, self.universe)
+
+        locked = set(position_map)
+        locked.update(
+            symbol
+            for model in self.models.values()
+            for symbol in model.guards
+        )
+
+        total_exposure = self._actual_exposure(positions)
+        session_equity = self.session.starting_equity if self.session else account["equity"]
+        global_cap = session_equity * self.config.max_account_exposure_pct
+        global_room = max(0.0, global_cap - total_exposure)
+        available_cash = max(0.0, float(account.get("cash", 0.0)))
+
+        for model in self.models.values():
+            if model.guards:
+                continue
+
+            candidates = []
             for symbol in self.universe:
-                if symbol in locked: continue
-                catalyst=self.news.catalyst_for(symbol) if model.name=="B" else None
-                signal=model.strategy.evaluate(symbol,bars.get(symbol,self._empty_frame()),market_aligned,now,catalyst)
-                model.latest_signals[symbol]=signal.to_dict()
-                if signal.decision==Decision.BUY:candidates.append(signal)
+                if symbol in locked:
+                    continue
+                catalyst = self.news.catalyst_for(symbol) if model.name == "B" else None
+                signal = model.strategy.evaluate(
+                    symbol,
+                    bars.get(symbol, self._empty_frame()),
+                    market_aligned,
+                    now,
+                    catalyst,
+                )
+                model.latest_signals[symbol] = signal.to_dict()
+                if signal.decision == Decision.BUY:
+                    candidates.append(signal)
+
             if not candidates:
-                model.log("SCAN","No qualified entry",scanned=len(self.universe)); continue
-            best=max(candidates,key=lambda s:s.score or s.relative_volume)
-            check=model.risk.entry_check(best.price,best.stop_price,False,now)
+                if (
+                    model.last_scan_log_at is None
+                    or now - model.last_scan_log_at >= timedelta(seconds=60)
+                ):
+                    model.log("SCAN", "No qualified entry", scanned=len(self.universe))
+                    model.last_scan_log_at = now
+                continue
+
+            best = max(candidates, key=lambda item: item.score or item.relative_volume)
+            check = model.risk.entry_check(
+                best.price,
+                best.stop_price,
+                False,
+                now,
+                available_cash=available_cash,
+                global_room=global_room,
+            )
             if not check.allowed:
-                model.log("INFO","Entry rejected",reason=check.reason,symbol=best.symbol); continue
-            cid=f"model-{model.name.lower()}-{uuid4().hex[:20]}"
-            order=await asyncio.to_thread(self.broker.buy_qty,best.symbol,check.quantity,cid)
-            context=best.to_dict()|{"risk_dollars":check.dollars_at_risk,"planned_notional":check.notional}
-            self.journal.record_order(order,model=model.name,side="BUY",symbol=best.symbol,reason=best.reason,requested_qty=check.quantity,signal_price=best.price,signal_context=context)
-            model.guards[best.symbol]=PositionGuard(model.name,best.symbol,best.price,check.quantity,best.price,best.stop_price,now)
-            locked.add(best.symbol); model.log("TRADE","Paper buy submitted",symbol=best.symbol,qty=round(check.quantity,4),risk=round(check.dollars_at_risk,2),setup=best.setup)
+                model.log("RISK", "Entry rejected", reason=check.reason, symbol=best.symbol)
+                continue
 
-    async def _manage_model_position(self,model:ModelRuntime,position_map:dict,now:datetime)->None:
-        for symbol,guard in list(model.guards.items()):
-            position=position_map.get(symbol)
-            if position is None: continue
-            current=float(position.current_price); entry=float(position.avg_entry_price); guard.entry_price=entry; guard.high_watermark=max(guard.high_watermark,current)
-            reason=model.risk.exit_reason(entry,current,guard.high_watermark,guard.stop_price)
-            if now.time()>=time(15,50):reason="end_of_day"
-            if not reason: continue
-            qty=min(abs(float(position.qty)),guard.quantity)
-            cid=f"model-{model.name.lower()}-exit-{uuid4().hex[:16]}"
-            order=await asyncio.to_thread(self.broker.sell_qty,symbol,qty,cid)
-            self.journal.record_order(order,model=model.name,side="SELL",symbol=symbol,reason=reason,requested_qty=qty,signal_price=current,signal_context={"entry":entry,"stop":guard.stop_price,"high_watermark":guard.high_watermark})
-            model.guards.pop(symbol,None); model.log("TRADE","Paper exit submitted",symbol=symbol,reason=reason,qty=round(qty,4))
+            trade_id = f"{model.name}-{uuid4().hex[:12]}"
+            client_order_id = f"model-{model.name.lower()}-{trade_id.lower()}"
+            order = await asyncio.to_thread(
+                self.broker.buy_qty,
+                best.symbol,
+                check.quantity,
+                client_order_id,
+            )
 
-    async def _sync_journal_orders(self)->None:
-        for oid in self.journal.pending_order_ids():
-            try: self.journal.update_order(await asyncio.to_thread(self.broker.order,oid))
-            except Exception: pass
-        status=self.journal.status(); summary=status.get("summary",{}).get("models",{})
-        for name,model in self.models.items():
-            model.realized_pl=float(summary.get(name,{}).get("realized_pl",0) or 0); model.risk.realized_pl=model.realized_pl
+            context = best.to_dict() | {
+                "risk_dollars": round(check.dollars_at_risk, 2),
+                "planned_notional": round(check.notional, 2),
+                "session_allocation": round(model.capital, 2),
+                "risk_per_trade_pct": self.config.risk_per_trade_pct,
+            }
+            self.journal.record_order(
+                order,
+                model=model.name,
+                side="BUY",
+                symbol=best.symbol,
+                reason=best.reason,
+                trade_id=trade_id,
+                session_id=self.session.session_id if self.session else None,
+                requested_qty=check.quantity,
+                signal_price=best.price,
+                signal_context=context,
+            )
 
-    async def _refresh_universe_if_needed(self,now:datetime)->None:
-        if not self.config.dynamic_universe:self.universe=list(self.config.watchlist);return
-        if self.universe_refreshed_at and now-self.universe_refreshed_at<timedelta(minutes=self.config.universe_refresh_minutes):return
-        selected,stats=await asyncio.to_thread(self.broker.discover_universe)
+            model.guards[best.symbol] = PositionGuard(
+                model=model.name,
+                symbol=best.symbol,
+                trade_id=trade_id,
+                entry_price=best.price,
+                quantity=check.quantity,
+                high_watermark=best.price,
+                stop_price=best.stop_price,
+                entered_at=now,
+                current_price=best.price,
+            )
+            locked.add(best.symbol)
+            available_cash = max(0.0, available_cash - check.notional)
+            global_room = max(0.0, global_room - check.notional)
+            model.log(
+                "TRADE",
+                "Paper buy submitted",
+                symbol=best.symbol,
+                qty=round(check.quantity, 4),
+                notional=round(check.notional, 2),
+                risk=round(check.dollars_at_risk, 2),
+                setup=best.setup,
+            )
+
+    async def _manage_model_position(
+        self,
+        model: ModelRuntime,
+        position_map: dict,
+        now: datetime,
+    ) -> None:
+        for symbol, guard in list(model.guards.items()):
+            position = position_map.get(symbol)
+            if position is None:
+                continue
+
+            current = float(position.current_price)
+            entry = float(position.avg_entry_price)
+            guard.entry_price = entry
+            guard.current_price = current
+            guard.unrealized_pl = float(position.unrealized_pl)
+            guard.high_watermark = max(guard.high_watermark, current)
+
+            if guard.exit_pending:
+                continue
+
+            reason = model.risk.exit_reason(
+                entry,
+                current,
+                guard.high_watermark,
+                guard.stop_price,
+            )
+            if now.time() >= time(15, 50):
+                reason = "end_of_day"
+
+            if not reason:
+                continue
+
+            qty = min(abs(float(position.qty)), guard.quantity)
+            order = await asyncio.to_thread(
+                self.broker.sell_qty,
+                symbol,
+                qty,
+                f"model-{model.name.lower()}-exit-{uuid4().hex[:14]}",
+            )
+            self.journal.record_order(
+                order,
+                model=model.name,
+                side="SELL",
+                symbol=symbol,
+                reason=reason,
+                trade_id=guard.trade_id,
+                session_id=self.session.session_id if self.session else None,
+                requested_qty=qty,
+                signal_price=current,
+                signal_context={
+                    "entry": entry,
+                    "stop": guard.stop_price,
+                    "high_watermark": guard.high_watermark,
+                },
+            )
+            guard.exit_pending = True
+            model.log(
+                "TRADE",
+                "Paper exit submitted",
+                symbol=symbol,
+                reason=reason,
+                qty=round(qty, 4),
+            )
+
+    def _refresh_model_marks(self, position_map: dict) -> None:
+        for model in self.models.values():
+            unrealized = 0.0
+            for symbol, guard in model.guards.items():
+                position = position_map.get(symbol)
+                if position is not None:
+                    guard.current_price = float(position.current_price)
+                    guard.unrealized_pl = float(position.unrealized_pl)
+                    unrealized += guard.unrealized_pl
+            model.unrealized_pl = unrealized
+            model.refresh_peak()
+
+    async def _sync_journal_orders(self) -> None:
+        for order_id in self.journal.pending_order_ids():
+            try:
+                order = await asyncio.to_thread(self.broker.order, order_id)
+                self.journal.update_order(order)
+            except Exception as exc:
+                for model in self.models.values():
+                    model.log("WARN", "Order-status sync failed", order_id=order_id, error=str(exc))
+
+        summary = self.journal.status().get("summary", {}).get("models", {})
+        for name, model in self.models.items():
+            stats = summary.get(name, {})
+            model.realized_pl = float(stats.get("realized_pl", 0.0) or 0.0)
+            model.risk.load_performance(
+                realized_pl=model.realized_pl,
+                closed_trades=int(stats.get("closed_trades", 0) or 0),
+                wins=int(stats.get("wins", 0) or 0),
+                losses=int(stats.get("losses", 0) or 0),
+                consecutive_losses=int(stats.get("consecutive_losses", 0) or 0),
+            )
+
+    async def _refresh_universe_if_needed(self, now: datetime) -> None:
+        if not self.config.dynamic_universe:
+            self.universe = list(self.config.watchlist)
+            return
+
+        refresh_after = timedelta(minutes=self.config.universe_refresh_minutes)
+        if self.universe_refreshed_at and now - self.universe_refreshed_at < refresh_after:
+            return
+
+        selected, stats = await asyncio.to_thread(self.broker.discover_universe)
         if selected:
-            self.universe=selected; self.universe_stats=stats; self.universe_refreshed_at=now
-            for m in self.models.values():m.log("INFO","Universe refreshed",**stats)
+            self.universe = selected
+            self.universe_stats = stats
+            self.universe_refreshed_at = now
+            for model in self.models.values():
+                model.log("INFO", "Universe refreshed", **stats)
+        else:
+            for model in self.models.values():
+                model.log("WARN", "Universe refresh returned no candidates; keeping prior universe")
 
     @staticmethod
-    def _entry_session(now): return now.weekday()<5 and time(9,35)<=now.time()<=time(14,30)
+    def _actual_exposure(positions: list) -> float:
+        exposure = 0.0
+        for position in positions:
+            market_value = getattr(position, "market_value", None)
+            if market_value not in (None, ""):
+                exposure += abs(float(market_value))
+            else:
+                exposure += abs(float(position.qty) * float(position.current_price))
+        return exposure
+
     @staticmethod
-    def _market_alignment(bars):
-        for benchmark in ("SPY","QQQ"):
-            f=bars.get(benchmark)
-            if f is not None and len(f)>=2 and float(f.iloc[-1]["close"])>float(f.iloc[-2]["close"]):return True
+    def _entry_session(now: datetime) -> bool:
+        return now.weekday() < 5 and time(9, 35) <= now.time() <= time(14, 30)
+
+    @staticmethod
+    def _market_alignment(bars: dict) -> bool:
+        for benchmark in ("SPY", "QQQ"):
+            frame = bars.get(benchmark)
+            if (
+                frame is not None
+                and len(frame) >= 2
+                and float(frame.iloc[-1]["close"]) > float(frame.iloc[-2]["close"])
+            ):
+                return True
         return False
+
     @staticmethod
     def _empty_frame():
         import pandas as pd
         return pd.DataFrame()
 
-    def status(self)->dict:
-        journal=self.journal.status()
-        return {"mode":"PAPER ONLY","running":self.running,"account":self.last_account,"model_capital":self.config.model_capital,
-                "models":{name:{"name":name,"label":m.label,"capital":self.config.model_capital,"realized_pl":m.realized_pl,"equity":self.config.model_capital+m.realized_pl,
-                                       "open_positions":[{"symbol":g.symbol,"entry":g.entry_price,"qty":g.quantity,"stop":g.stop_price,"high":g.high_watermark} for g in m.guards.values()],
-                                       "signals":list(m.latest_signals.values()),"logs":list(m.logs)} for name,m in self.models.items()},
-                "universe":{"symbols":self.universe,"stats":self.universe_stats,"refreshed_at":self.universe_refreshed_at.isoformat() if self.universe_refreshed_at else None},
-                "trades":journal.get("trades",[]),"trade_summary":journal.get("summary",{})}
+    def status(self) -> dict:
+        journal = self.journal.status()
+        summary = journal.get("summary", {}).get("models", {})
+        now = datetime.now(EASTERN)
+
+        account_equity = float(self.last_account.get("equity", 0.0) or 0.0)
+        if self.session:
+            starting_equity = self.session.starting_equity
+            allocations = self.session.allocations
+            session_id = self.session.session_id
+            started_at = self.session.started_at
+            session_state = self.session.state
+        else:
+            starting_equity = account_equity
+            preview = round(account_equity / 2.0, 2) if account_equity else 0.0
+            allocations = {"A": preview, "B": round(account_equity - preview, 2) if account_equity else 0.0}
+            session_id = None
+            started_at = None
+            session_state = "READY"
+
+        total_exposure = self._actual_exposure(self.last_positions)
+        account_pnl = account_equity - starting_equity if starting_equity else 0.0
+
+        models = {}
+        for name, model in self.models.items():
+            stats = summary.get(name, {})
+            capital = float(allocations.get(name, model.capital if model.risk.session_capital else 0.0))
+            if capital > 0 and model.risk.session_capital <= 0:
+                model.risk.configure_session_capital(capital)
+
+            open_positions = []
+            open_exposure = 0.0
+            for guard in model.guards.values():
+                price = guard.current_price or guard.entry_price
+                exposure = guard.quantity * price
+                open_exposure += exposure
+                open_positions.append(
+                    {
+                        "symbol": guard.symbol,
+                        "trade_id": guard.trade_id,
+                        "entry": guard.entry_price,
+                        "current": price,
+                        "qty": guard.quantity,
+                        "stop": guard.stop_price,
+                        "high": guard.high_watermark,
+                        "unrealized_pl": guard.unrealized_pl,
+                        "exposure": exposure,
+                        "exit_pending": guard.exit_pending,
+                    }
+                )
+
+            models[name] = {
+                "name": name,
+                "role": model.role,
+                "label": model.label,
+                "capital": capital,
+                "equity": model.equity if capital else capital,
+                "realized_pl": model.realized_pl,
+                "unrealized_pl": model.unrealized_pl,
+                "return_pct": model.return_pct if capital else 0.0,
+                "drawdown_pct": model.drawdown_pct if capital else 0.0,
+                "open_exposure": open_exposure,
+                "open_positions": open_positions,
+                "stats": stats,
+                "risk": {
+                    "risk_per_trade": model.risk.risk_budget if capital else 0.0,
+                    "risk_per_trade_pct": self.config.risk_per_trade_pct * 100,
+                    "max_position": model.risk.max_position_notional if capital else 0.0,
+                    "max_position_pct": self.config.max_position_pct * 100,
+                    "daily_loss_limit": model.risk.daily_loss_limit if capital else 0.0,
+                    "daily_loss_pct": self.config.daily_loss_pct * 100,
+                    "remaining_daily_loss": model.risk.remaining_daily_loss if capital else 0.0,
+                    "max_trades": self.config.max_trades_per_day,
+                    "consecutive_loss_limit": self.config.max_consecutive_losses,
+                },
+                "signals": list(model.latest_signals.values()),
+                "logs": list(model.logs),
+            }
+
+        if self.running:
+            state = "DRAINING" if self.draining else ("PAUSED" if self.entries_paused else "RUNNING")
+        else:
+            state = session_state if session_state in {"FLATTENING", "FLATTENED"} else "STOPPED"
+
+        return {
+            "mode": "PAPER ONLY",
+            "state": state,
+            "running": self.running,
+            "entries_paused": self.entries_paused,
+            "draining": self.draining,
+            "account": self.last_account,
+            "experiment": {
+                "session_id": session_id,
+                "started_at": started_at,
+                "starting_equity": starting_equity,
+                "account_equity": account_equity,
+                "account_pnl": account_pnl,
+                "allocation_a": float(allocations.get("A", 0.0)),
+                "allocation_b": float(allocations.get("B", 0.0)),
+                "split": "50 / 50",
+                "global_exposure": total_exposure,
+                "global_exposure_limit": starting_equity * self.config.max_account_exposure_pct if starting_equity else 0.0,
+                "entry_window_open": self._entry_session(now),
+                "market_time": now.isoformat(timespec="seconds"),
+                "last_cycle_at": self.last_cycle_at.isoformat(timespec="seconds") if self.last_cycle_at else None,
+                "last_cycle_error": self.last_cycle_error,
+                "cycle_count": self.cycle_count,
+            },
+            "controls": {
+                "can_start": not self.running,
+                "can_pause": self.running and not self.entries_paused and not self.draining,
+                "can_resume": self.running and self.entries_paused and not self.draining,
+                "can_drain": self.running and not self.draining,
+                "can_flatten": True,
+            },
+            "models": models,
+            "universe": {
+                "symbols": self.universe,
+                "stats": self.universe_stats,
+                "refreshed_at": self.universe_refreshed_at.isoformat() if self.universe_refreshed_at else None,
+            },
+            "trades": journal.get("trades", []),
+            "trade_summary": journal.get("summary", {}),
+        }

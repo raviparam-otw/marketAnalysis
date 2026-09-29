@@ -22,16 +22,23 @@
     </nav>
 
     <div class="controls">
-      <span id="state" class="state">Loading…</span>
-      <button id="start">Start both</button>
-      <button id="stop" class="secondary">Stop</button>
-      <button id="kill" class="danger">Kill</button>
+      <span id="state" class="state-badge">Loading</span>
+      <button id="start">Start Session</button>
+      <button id="pause" class="secondary">Pause Entries</button>
+      <button id="resume" class="secondary">Resume</button>
+      <button id="stop" class="secondary">Drain &amp; Stop</button>
+      <button id="kill" class="danger">Emergency Flatten</button>
     </div>
   </header>
 
   {% if startup_error %}
     <div class="error"><strong>Connection error:</strong> {{ startup_error }}</div>
   {% endif %}
+
+  <section class="session-shell">
+    <div id="session-strip" class="session-grid"></div>
+    <div id="session-meta" class="session-meta"></div>
+  </section>
 
   <main class="workspace">
     <section id="compare-view" class="compare-grid">
@@ -46,14 +53,22 @@
     <section id="trades-view" class="hidden">
       <div class="page-title">
         <div>
-          <h1>Trade comparison</h1>
-          <p>Actual fills and realized P&amp;L by model.</p>
+          <span class="page-kicker">EXPERIMENT LEDGER</span>
+          <h1>Trades &amp; performance</h1>
+          <p>Actual fills, realized P&amp;L and model-level outcome statistics.</p>
         </div>
         <span id="trade-total"></span>
       </div>
+      <div id="trade-summary" class="trade-summary-grid"></div>
       <div class="trade-grid">
-        <article class="trade-panel"><h2>Model A</h2><div id="trades-a"></div></article>
-        <article class="trade-panel"><h2>Model B</h2><div id="trades-b"></div></article>
+        <article class="trade-panel">
+          <div class="trade-panel-head"><span class="role-tag control">CONTROL</span><h2>Model A · Opening Range / VWAP</h2></div>
+          <div id="trades-a"></div>
+        </article>
+        <article class="trade-panel">
+          <div class="trade-panel-head"><span class="role-tag challenger">CHALLENGER</span><h2>Model B · Momentum Catalyst</h2></div>
+          <div id="trades-b"></div>
+        </article>
       </div>
     </section>
   </main>

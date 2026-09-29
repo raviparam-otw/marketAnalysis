@@ -41,9 +41,13 @@ class Signal:
 class PositionGuard:
     model: str
     symbol: str
+    trade_id: str
     entry_price: float
     quantity: float
     high_watermark: float
     stop_price: float
     entered_at: datetime
+    current_price: float = 0.0
+    unrealized_pl: float = 0.0
     partial_taken: bool = False
+    exit_pending: bool = False

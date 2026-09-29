@@ -1,48 +1,126 @@
 from __future__ import annotations
+
 from contextlib import asynccontextmanager
 from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
 from .broker import PaperBroker
 from .config import settings
 from .engine import TradingEngine
 
-PACKAGE_DIR=Path(__file__).resolve().parent
-templates=Jinja2Templates(directory=str(PACKAGE_DIR/"templates"))
-engine:TradingEngine|None=None; startup_error:str|None=None
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
+
+engine: TradingEngine | None = None
+startup_error: str | None = None
+
 
 @asynccontextmanager
-async def lifespan(_:FastAPI):
-    global engine,startup_error
+async def lifespan(_: FastAPI):
+    global engine, startup_error
     try:
-        settings.validate(); engine=TradingEngine(settings,PaperBroker(settings)); engine.last_account=engine.broker.account_snapshot()
-    except Exception as exc: startup_error=str(exc)
+        settings.validate()
+        engine = TradingEngine(settings, PaperBroker(settings))
+        engine.last_account = engine.broker.account_snapshot()
+        engine.last_positions = engine.broker.positions()
+    except Exception as exc:
+        startup_error = str(exc)
     yield
-    if engine and engine.running: await engine.stop()
+    if engine:
+        await engine.shutdown()
 
-app=FastAPI(title="Alpaca Dual-Model Intraday Lab",version="0.2.0",lifespan=lifespan)
-app.mount("/static",StaticFiles(directory=str(PACKAGE_DIR/"static")),name="static")
 
-def get_engine():
-    if not engine: raise HTTPException(status_code=503,detail=startup_error or "Engine unavailable")
+app = FastAPI(
+    title="Alpaca Dual-Model Intraday Lab",
+    version="0.3.0",
+    lifespan=lifespan,
+)
+app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
+
+
+def get_engine() -> TradingEngine:
+    if not engine:
+        raise HTTPException(status_code=503, detail=startup_error or "Engine unavailable")
     return engine
 
-@app.get("/",response_class=HTMLResponse)
-async def dashboard(request:Request): return templates.TemplateResponse(request=request,name="dashboard.html",context={"startup_error":startup_error,"view":"compare"})
-@app.get("/model/{model}",response_class=HTMLResponse)
-async def model_page(request:Request,model:str):
-    model=model.upper()
-    if model not in {"A","B"}: raise HTTPException(404,"Unknown model")
-    return templates.TemplateResponse(request=request,name="dashboard.html",context={"startup_error":startup_error,"view":model})
-@app.get("/trades",response_class=HTMLResponse)
-async def trades_page(request:Request): return templates.TemplateResponse(request=request,name="dashboard.html",context={"startup_error":startup_error,"view":"trades"})
+
+async def _control(action):
+    try:
+        await action()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={"startup_error": startup_error, "view": "compare"},
+    )
+
+
+@app.get("/model/{model}", response_class=HTMLResponse)
+async def model_page(request: Request, model: str):
+    model = model.upper()
+    if model not in {"A", "B"}:
+        raise HTTPException(status_code=404, detail="Unknown model")
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={"startup_error": startup_error, "view": model},
+    )
+
+
+@app.get("/trades", response_class=HTMLResponse)
+async def trades_page(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={"startup_error": startup_error, "view": "trades"},
+    )
+
+
 @app.get("/api/status")
-async def status(): return get_engine().status()
+async def status():
+    return get_engine().status()
+
+
 @app.post("/api/start")
-async def start(): await get_engine().start(); return {"ok":True,"running":True}
+async def start():
+    instance = get_engine()
+    await _control(instance.start)
+    return {"ok": True, "state": instance.status()["state"]}
+
+
+@app.post("/api/pause")
+async def pause():
+    instance = get_engine()
+    await _control(instance.pause_entries)
+    return {"ok": True, "state": instance.status()["state"]}
+
+
+@app.post("/api/resume")
+async def resume():
+    instance = get_engine()
+    await _control(instance.resume_entries)
+    return {"ok": True, "state": instance.status()["state"]}
+
+
 @app.post("/api/stop")
-async def stop(): await get_engine().stop(); return {"ok":True,"running":False}
+async def stop():
+    instance = get_engine()
+    await _control(instance.request_drain)
+    return {"ok": True, "state": instance.status()["state"]}
+
+
 @app.post("/api/kill")
-async def kill(): await get_engine().kill_switch(); return {"ok":True,"running":False,"positions":"closing"}
+async def kill():
+    instance = get_engine()
+    await instance.kill_switch()
+    return {"ok": True, "state": instance.status()["state"], "positions": "flattening"}
