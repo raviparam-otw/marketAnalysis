@@ -26,6 +26,9 @@ jobs:
       - name: Compile Python modules
         run: python -m compileall -q src validate.py run.py backtest.py sample_test.py
 
+      - name: Check shell scripts
+        run: bash -n scripts/setup_model_c_macos.sh scripts/start_finr1_macos.sh scripts/auto_model_c_macos.sh
+
       - name: Three-model sample fixture
         env:
           ALPACA_PAPER: "true"
