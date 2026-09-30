@@ -30,7 +30,7 @@ class ExperimentSession:
 
 
 class ExperimentSessionStore:
-    """Crash-safe session snapshot. One A/B experiment allocation is frozen per trading day."""
+    """Crash-safe session snapshot. One A/B/C allocation is frozen per trading day."""
 
     def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory)
@@ -54,14 +54,15 @@ class ExperimentSessionStore:
         if starting_equity <= 0:
             raise ValueError("Cannot start an experiment with non-positive account equity.")
         total = Decimal(str(starting_equity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocation_a = (total / Decimal("2")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocation_b = total - allocation_a
+        allocation_a = (total / Decimal("3")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        allocation_b = (total / Decimal("3")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        allocation_c = total - allocation_a - allocation_b
         session = ExperimentSession(
             session_id=f"{current.strftime('%Y%m%d')}-{uuid4().hex[:10]}",
             trading_date=current.date().isoformat(),
             started_at=current.isoformat(timespec="seconds"),
             starting_equity=float(total),
-            allocations={"A": float(allocation_a), "B": float(allocation_b)},
+            allocations={"A": float(allocation_a), "B": float(allocation_b), "C": float(allocation_c)},
             state="READY",
             updated_at=current.isoformat(timespec="seconds"),
         )
