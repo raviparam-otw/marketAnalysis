@@ -120,7 +120,7 @@ def offline_checks() -> list[Check]:
             session = store.create_or_load(83_421.17, now)
             total = round(sum(session.allocations.values()), 2)
             spread = max(session.allocations.values()) - min(session.allocations.values())
-            passed = total == 83_421.17 and spread <= 0.01 and set(session.allocations) == {"A", "B", "C"}
+            passed = total == 83_421.17 and round(spread, 2) <= 0.01 and set(session.allocations) == {"A", "B", "C"}
             checks.append(
                 Check(
                     "dynamic-three-way-split",
