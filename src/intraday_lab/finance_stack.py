@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,11 @@ class FinBERTSentiment:
 
     @property
     def ready(self) -> bool:
-        return self.enabled
+        return (
+            self.enabled
+            and importlib.util.find_spec("transformers") is not None
+            and importlib.util.find_spec("torch") is not None
+        )
 
     def _load(self):
         if not self.enabled:
@@ -33,11 +38,20 @@ class FinBERTSentiment:
                 raise RuntimeError(
                     "FinBERT dependencies are missing. Install requirements-model-c.txt."
                 ) from exc
+            import torch
+
+            if torch.cuda.is_available():
+                device = 0
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = -1
+
             self._pipeline = pipeline(
                 "text-classification",
                 model=self.model_name,
                 tokenizer=self.model_name,
-                device=-1,
+                device=device,
             )
         return self._pipeline
 
@@ -110,7 +124,12 @@ class KronosForecaster:
 
     @property
     def ready(self) -> bool:
-        return self.enabled and self.repo_path.exists()
+        return (
+            self.enabled
+            and self.repo_path.exists()
+            and importlib.util.find_spec("torch") is not None
+            and importlib.util.find_spec("huggingface_hub") is not None
+        )
 
     def _load(self):
         if not self.enabled:
@@ -142,6 +161,8 @@ class KronosForecaster:
 
     @staticmethod
     def _prepare_frame(bars: pd.DataFrame, lookback: int) -> pd.DataFrame:
+        if bars is None:
+            raise ValueError("Kronos requires non-empty OHLCV bars.")
         frame = bars.copy().sort_index()
         if frame.empty:
             raise ValueError("Kronos requires non-empty OHLCV bars.")
