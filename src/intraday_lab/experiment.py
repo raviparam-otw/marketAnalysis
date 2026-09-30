@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -46,23 +47,63 @@ class ExperimentSessionStore:
         with path.open("r", encoding="utf-8") as handle:
             return ExperimentSession(**json.load(handle))
 
-    def create_or_load(self, starting_equity: float, now: datetime | None = None) -> ExperimentSession:
-        current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
-        existing = self.load_today(current)
-        if existing:
-            return existing
+    @staticmethod
+    def three_way_allocations(starting_equity: float) -> tuple[float, dict[str, float]]:
         if starting_equity <= 0:
             raise ValueError("Cannot start an experiment with non-positive account equity.")
         total = Decimal(str(starting_equity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         allocation_a = (total / Decimal("3")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         allocation_b = (total / Decimal("3")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         allocation_c = total - allocation_a - allocation_b
+        return float(total), {
+            "A": float(allocation_a),
+            "B": float(allocation_b),
+            "C": float(allocation_c),
+        }
+
+    def create_or_load(self, starting_equity: float, now: datetime | None = None) -> ExperimentSession:
+        current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
+        existing = self.load_today(current)
+        if existing:
+            return existing
+        total, allocations = self.three_way_allocations(starting_equity)
         session = ExperimentSession(
             session_id=f"{current.strftime('%Y%m%d')}-{uuid4().hex[:10]}",
             trading_date=current.date().isoformat(),
             started_at=current.isoformat(timespec="seconds"),
-            starting_equity=float(total),
-            allocations={"A": float(allocation_a), "B": float(allocation_b), "C": float(allocation_c)},
+            starting_equity=total,
+            allocations=allocations,
+            state="READY",
+            updated_at=current.isoformat(timespec="seconds"),
+        )
+        self.save(session, current)
+        return session
+
+    def replace_legacy_with_three_way(
+        self,
+        starting_equity: float,
+        now: datetime | None = None,
+    ) -> ExperimentSession:
+        """Replace a flat legacy A/B session with a fresh A/B/C split.
+
+        The previous session snapshot is preserved once as a .legacy-ab.json
+        file so the old allocation can still be inspected later.
+        """
+        current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
+        path = self._path(current)
+        if path.exists():
+            backup = path.with_name(path.stem + ".legacy-ab.json")
+            if not backup.exists():
+                self.directory.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, backup)
+
+        total, allocations = self.three_way_allocations(starting_equity)
+        session = ExperimentSession(
+            session_id=f"{current.strftime('%Y%m%d')}-{uuid4().hex[:10]}",
+            trading_date=current.date().isoformat(),
+            started_at=current.isoformat(timespec="seconds"),
+            starting_equity=total,
+            allocations=allocations,
             state="READY",
             updated_at=current.isoformat(timespec="seconds"),
         )
