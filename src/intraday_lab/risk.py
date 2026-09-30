@@ -202,13 +202,15 @@ class RiskManager:
                 if entered_at is not None
                 else 0.0
             )
-            if pnl_pct <= -self.config.model_a_weakness_exit_pct:
+            weakness_price = entry * (1 - self.config.model_a_weakness_exit_pct)
+            if current <= weakness_price + 1e-9:
                 return "model_a_weakness_exit"
             if (
                 entered_at is not None
                 and elapsed_minutes >= self.config.model_a_failed_breakout_minutes
                 and high_pct < self.config.model_a_failed_breakout_max_gain_pct
-                and pnl_pct <= -self.config.model_a_failed_breakout_exit_pct
+                and current
+                <= entry * (1 - self.config.model_a_failed_breakout_exit_pct) + 1e-9
             ):
                 return "model_a_failed_breakout"
 
