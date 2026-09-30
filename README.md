@@ -42,7 +42,7 @@ Model C accepts any OpenAI-compatible endpoint serving an open-source model. Exa
 
 The top bar is designed around safe experiment operation:
 
-- **Start Session** — freezes the day's account equity and equal A/B/C model allocations, then starts both models.
+- **Start Session** — freezes the day's account equity and equal A/B/C model allocations, then starts all three models.
 - **Pause Entries** — blocks new entries while continuing to manage existing positions and exits.
 - **Resume** — re-enables entries.
 - **Drain & Stop** — takes no new positions and keeps managing existing positions until the experiment is flat, then stops.
@@ -83,6 +83,43 @@ All pages use the same frozen session baseline and risk ledger.
 ## Restart protection
 
 A daily session snapshot is written under `trade-data/`. The engine can recover attributable Model A/B/C positions from the journal after a process restart. If it sees a position that cannot be safely attributed to the experiment, Start Session is blocked instead of guessing.
+
+## Local sample-data test
+
+A checked-in synthetic fixture lets you exercise **all three models locally without Alpaca connectivity or order submission**.
+
+Files:
+
+- `sample-data/market-bars.csv` — deterministic 1-minute bars for ALPHA (Model A), BETA (Model B), GAMMA (Model C), plus SPY and QQQ.
+- `sample-data/news.json` — synthetic catalysts for the momentum and LLM paths.
+- `sample-data/model-c-responses.json` — deterministic analyst-committee and portfolio-manager responses so Model C can be tested even before a local LLM is running.
+- `sample_test.py` — loads the fixture, runs A/B/C, applies each model's risk sizing, and submits **no orders**.
+
+Run the complete offline sample:
+
+```bash
+git pull
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+PYTHONPATH=src python sample_test.py
+```
+
+Expected ending:
+
+```text
+[PASS] Model A
+[PASS] Model B
+[PASS] Model C
+RESULT: READY
+```
+
+To test the same Model C shortlist through your real configured open-source LLM endpoint instead of the deterministic fixture:
+
+```bash
+PYTHONPATH=src python sample_test.py --live-llm
+```
+
+That command still does not connect to Alpaca or place orders; it only replaces the checked-in Model C response fixture with your configured LLM response.
 
 ## Validate before running
 

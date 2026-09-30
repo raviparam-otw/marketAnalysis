@@ -24,7 +24,12 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Compile Python modules
-        run: python -m compileall -q src validate.py run.py backtest.py
+        run: python -m compileall -q src validate.py run.py backtest.py sample_test.py
+
+      - name: Three-model sample fixture
+        env:
+          ALPACA_PAPER: "true"
+        run: PYTHONPATH=src python sample_test.py
 
       - name: Offline validation
         env:

@@ -1,0 +1,42 @@
+{
+  "analyst_committee": {
+    "candidates": [
+      {
+        "symbol": "GAMMA",
+        "technical_view": "Price is above VWAP with positive 5-minute momentum and elevated relative volume.",
+        "sentiment_view": "Synthetic contract catalyst is positive for this local test.",
+        "bull_case": "Momentum and volume are aligned near the intraday high.",
+        "bear_case": "A fast reversal below VWAP would invalidate the setup.",
+        "risk_flags": [
+          "Synthetic fixture",
+          "Intraday volatility"
+        ],
+        "desk_score": 86
+      },
+      {
+        "symbol": "BETA",
+        "technical_view": "Strong gap and momentum with high relative volume.",
+        "sentiment_view": "Synthetic demand catalyst is positive.",
+        "bull_case": "Continuation remains possible while price holds VWAP.",
+        "bear_case": "Large gap increases reversal risk.",
+        "risk_flags": [
+          "Gap fade risk"
+        ],
+        "desk_score": 79
+      }
+    ]
+  },
+  "portfolio_manager": {
+    "decision": "BUY",
+    "symbol": "GAMMA",
+    "confidence": 0.84,
+    "rationale": "Momentum, relative volume, VWAP structure and the supplied catalyst agree.",
+    "risks": [
+      "Momentum reversal",
+      "Synthetic sample data"
+    ],
+    "invalidation": "Exit if price loses VWAP and momentum deteriorates.",
+    "stop_pct": 0.012,
+    "take_profit_pct": 0.03
+  }
+}

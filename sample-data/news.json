@@ -1,0 +1,13 @@
+{
+  "ALPHA": null,
+  "BETA": {
+    "headline": "Synthetic demo catalyst: BETA reports stronger-than-expected product demand",
+    "source": "sample-data",
+    "synthetic": true
+  },
+  "GAMMA": {
+    "headline": "Synthetic demo catalyst: GAMMA announces a material enterprise contract",
+    "source": "sample-data",
+    "synthetic": true
+  }
+}
