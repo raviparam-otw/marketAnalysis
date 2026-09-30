@@ -1,4 +1,15 @@
-from sample_test import load_sample_bars, run_sample
+import importlib.util
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("sample_test", ROOT / "sample_test.py")
+sample_test = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(sample_test)
+
+load_sample_bars = sample_test.load_sample_bars
+run_sample = sample_test.run_sample
 
 
 def test_sample_fixture_contains_three_model_symbols_and_benchmarks():
