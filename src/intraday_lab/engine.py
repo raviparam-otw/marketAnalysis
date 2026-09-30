@@ -91,7 +91,13 @@ class TradingEngine:
                 "A",
                 "CONTROL",
                 "Opening Range / VWAP",
-                OpeningRangeVwapStrategy(config.relative_volume_min),
+                OpeningRangeVwapStrategy(
+                    relative_volume_min=config.relative_volume_min,
+                    breakout_buffer_pct=config.model_a_breakout_buffer_pct,
+                    confirmation_bars=config.model_a_confirmation_bars,
+                    max_extension_from_or_pct=config.model_a_max_extension_from_or_pct,
+                    max_extension_from_vwap_pct=config.model_a_max_extension_from_vwap_pct,
+                ),
                 RiskManager(config, "A"),
             ),
             "B": ModelRuntime(
@@ -544,7 +550,7 @@ class TradingEngine:
                         "Scanner funnel",
                         scanned=len(self.universe),
                         qualified=len(candidates),
-                        rejected_by=rejection_counts if model.name == "B" else None,
+                        rejected_by=rejection_counts,
                         open_positions=len(model.guards),
                         open_cap=model.risk.max_open_positions,
                     )
