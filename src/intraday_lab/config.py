@@ -104,6 +104,7 @@ class Settings:
     model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "60")))
     model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "5")))
     model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.68))
+    model_c_require_full_stack: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_FULL_STACK", True))
 
     model_c_finbert_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_FINBERT_ENABLED", True))
     model_c_finbert_model: str = field(default_factory=lambda: os.getenv("MODEL_C_FINBERT_MODEL", "ProsusAI/finbert"))
