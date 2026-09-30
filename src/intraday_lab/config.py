@@ -33,6 +33,7 @@ class Settings:
     api_key: str = field(default_factory=lambda: os.getenv("ALPACA_API_KEY", ""))
     secret_key: str = field(default_factory=lambda: os.getenv("ALPACA_SECRET_KEY", ""))
     paper: bool = field(default_factory=lambda: _bool("ALPACA_PAPER", False))
+    action_day_mode: bool = field(default_factory=lambda: _bool("ACTION_DAY_MODE", True))
 
     # Historical/backtest baseline. The live A/B engine does NOT assume this balance.
     starting_balance: float = field(default_factory=lambda: _float("STARTING_BALANCE", 100_000))
