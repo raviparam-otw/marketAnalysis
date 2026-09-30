@@ -54,6 +54,28 @@ The LLM cannot invent a ticker: a Fin-R1 BUY is accepted only when its symbol ex
 
 With `MODEL_C_REQUIRE_FULL_STACK=true` (the default), Model C will **not** submit a PAPER entry if Fin-R1, FinBERT, or Kronos is unavailable.
 
+### One-command local setup + test
+
+If you want the entire local Model C setup handled automatically, run:
+
+```bash
+git pull
+source .venv/bin/activate
+bash scripts/auto_model_c_macos.sh
+```
+
+That single command will:
+
+- reuse existing Fin-R1/Kronos/FinBERT downloads when already present;
+- install/download anything missing;
+- start the local Fin-R1 server if it is not already running;
+- detect the exact model ID exposed by the server;
+- update only the `MODEL_C_*` values in your existing `.env` while preserving Alpaca credentials;
+- run the full FinBERT + Kronos + Fin-R1 stack check;
+- run `sample_test.py --live-llm`.
+
+The validation path does not submit Alpaca orders.
+
 ### Install Model C on Apple Silicon
 
 Model weights are intentionally excluded from Git. Run:
