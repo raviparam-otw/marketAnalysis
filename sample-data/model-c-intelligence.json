@@ -1,0 +1,62 @@
+{
+  "ALPHA": {
+    "finbert": {
+      "label": "neutral",
+      "positive": 0.08,
+      "negative": 0.05,
+      "neutral": 0.87,
+      "signed_score": 0.03,
+      "source": "fixture"
+    },
+    "kronos": {
+      "direction": "BULLISH",
+      "current_close": 101.2753,
+      "predicted_close": 101.61,
+      "forecast_return_pct": 0.3305,
+      "forecast_max_upside_pct": 0.62,
+      "forecast_max_downside_pct": -0.21,
+      "pred_len": 5,
+      "source": "fixture"
+    }
+  },
+  "BETA": {
+    "finbert": {
+      "label": "positive",
+      "positive": 0.82,
+      "negative": 0.04,
+      "neutral": 0.14,
+      "signed_score": 0.78,
+      "source": "fixture"
+    },
+    "kronos": {
+      "direction": "FLAT",
+      "current_close": 9.6483,
+      "predicted_close": 9.661,
+      "forecast_return_pct": 0.1316,
+      "forecast_max_upside_pct": 0.74,
+      "forecast_max_downside_pct": -0.58,
+      "pred_len": 5,
+      "source": "fixture"
+    }
+  },
+  "GAMMA": {
+    "finbert": {
+      "label": "positive",
+      "positive": 0.91,
+      "negative": 0.02,
+      "neutral": 0.07,
+      "signed_score": 0.89,
+      "source": "fixture"
+    },
+    "kronos": {
+      "direction": "BULLISH",
+      "current_close": 21.7073,
+      "predicted_close": 21.991,
+      "forecast_return_pct": 1.307,
+      "forecast_max_upside_pct": 1.72,
+      "forecast_max_downside_pct": -0.31,
+      "pred_len": 5,
+      "source": "fixture"
+    }
+  }
+}
