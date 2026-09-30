@@ -50,4 +50,5 @@ class PositionGuard:
     current_price: float = 0.0
     unrealized_pl: float = 0.0
     partial_taken: bool = False
+    fill_risk_rebased: bool = False
     exit_pending: bool = False
