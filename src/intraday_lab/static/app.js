@@ -68,11 +68,13 @@ function renderSession(d){
 
   const startedAt=e.started_at?new Date(e.started_at).toLocaleString():'Not started';
   const lastCycle=e.last_cycle_at?new Date(e.last_cycle_at).toLocaleTimeString():'—';
+  const c=d.model_c||{};
   document.querySelector('#session-meta').innerHTML=`
     <span><b>Session</b> ${esc(e.session_id||'preview')}</span>
     <span><b>Started</b> ${esc(startedAt)}</span>
     <span><b>Split</b> ${esc(e.split||'50 / 50')}</span>
     <span><b>Exposure cap</b> ${money.format(exposureLimit)}</span>
+    <span><b>Model C</b> ${esc(c.configured?'SHADOW READY':'SHADOW SETUP')}</span>
     <span><b>Last cycle</b> ${esc(lastCycle)}</span>
     <span><b>Market time</b> ${e.market_time?new Date(e.market_time).toLocaleTimeString():'—'}</span>
   `;
