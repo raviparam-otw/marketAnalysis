@@ -97,12 +97,54 @@ class MomentumCatalystStrategy:
             "pullback continuation": controlled_pullback and continuation,
             "entry window": time(9,35) <= now.time() <= time(14,30),
         }
+
+        # Action-day Model B is intentionally aggressive: retain hard safety gates
+        # (tradable price and clock), but use a weighted momentum score for the rest.
+        score = (
+            max(0.0, change_pct) * 1.25
+            + max(0.0, gap_pct) * 0.75
+            + min(max(rvol, 0.0), 10.0) * 2.0
+            + (4.0 if price > vwap else 0.0)
+            + (3.0 if near_hod else 0.0)
+            + (3.0 if controlled_pullback and continuation else 0.0)
+            + (4.0 if catalyst else 0.0)
+        )
+        hard_failed = [
+            name for name in ("price range", "entry window")
+            if not conditions[name]
+        ]
+        if self.config.momentum_require_news and not conditions["catalyst"]:
+            hard_failed.append("catalyst")
+        momentum_trigger = (
+            conditions["gap/change"]
+            or conditions["relative volume"]
+            or (price > vwap and near_hod)
+            or (controlled_pullback and continuation)
+        )
+        qualified = (
+            not hard_failed
+            and momentum_trigger
+            and score >= self.config.momentum_min_score
+        )
+
         failed = [k for k,v in conditions.items() if not v]
         stop = min(pullback_low, vwap) if min(pullback_low, vwap) < price else price * 0.98
-        score = max(0, change_pct) + max(0, gap_pct) * .5 + min(rvol, 10) * 2 + (5 if catalyst else 0)
-        context = {"hod": hod, "pullback_low": pullback_low, "recent_high": recent_high}
-        return Signal(symbol, Decision.BUY if not failed else Decision.HOLD, price, vwap, hod, rvol, market_aligned,
-                      "Momentum catalyst continuation" if not failed else "Waiting for: " + ", ".join(failed),
-                      now, setup="momentum_pullback_hod", gap_pct=gap_pct, change_pct=change_pct,
+        context = {
+            "hod": hod,
+            "pullback_low": pullback_low,
+            "recent_high": recent_high,
+            "conditions": conditions,
+            "failed_conditions": failed,
+            "hard_failed": hard_failed,
+            "momentum_trigger": momentum_trigger,
+            "min_score": self.config.momentum_min_score,
+        }
+        reason = (
+            f"Aggressive momentum score {score:.2f}"
+            if qualified
+            else f"Rejected score={score:.2f}; waiting for: " + ", ".join(failed or ["momentum score"])
+        )
+        return Signal(symbol, Decision.BUY if qualified else Decision.HOLD, price, vwap, hod, rvol, market_aligned,
+                      reason, now, setup="momentum_action_day", gap_pct=gap_pct, change_pct=change_pct,
                       stop_price=stop, catalyst=bool(catalyst), catalyst_headline=(catalyst or {}).get("headline"),
                       score=score, context=context)
