@@ -24,7 +24,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Compile Python modules
-        run: python -m compileall -q src validate.py run.py backtest.py sample_test.py
+        run: python -m compileall -q src validate.py run.py backtest.py sample_test.py scripts/finr1_local_server.py scripts/check_model_c_stack.py
 
       - name: Check shell scripts
         run: bash -n scripts/setup_model_c_macos.sh scripts/start_finr1_macos.sh scripts/auto_model_c_macos.sh
