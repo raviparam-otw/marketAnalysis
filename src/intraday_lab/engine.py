@@ -611,11 +611,29 @@ class TradingEngine:
             if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
                 model.log(
                     "WARN",
-                    "Model C waiting for LLM endpoint",
+                    "Model C waiting for Fin-R1 endpoint",
                     required=["MODEL_C_LLM_BASE_URL", "MODEL_C_LLM_MODEL"],
                 )
                 model.last_scan_log_at = now
             return []
+
+        stack_status = self.model_c_intelligence.status()
+        if self.config.model_c_require_full_stack:
+            missing = [
+                name
+                for name, state in stack_status.items()
+                if state.get("enabled") and not state.get("ready")
+            ]
+            if missing:
+                if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
+                    model.log(
+                        "WARN",
+                        "Model C full stack not ready",
+                        missing=missing,
+                        stack=stack_status,
+                    )
+                    model.last_scan_log_at = now
+                return []
 
         if (
             model.last_decision_at is not None
@@ -639,6 +657,33 @@ class TradingEngine:
             limit=self.config.model_c_shortlist_size,
         )
 
+        if shortlist:
+            shortlist = await asyncio.to_thread(
+                self.model_c.enrich_shortlist,
+                shortlist,
+                bars_by_symbol=bars,
+                catalysts=catalysts,
+            )
+
+            if self.config.model_c_require_full_stack:
+                enrichment_errors = {
+                    item["symbol"]: {
+                        key: item.get(key, {}).get("error")
+                        for key in ("finbert", "kronos")
+                        if item.get(key, {}).get("error")
+                    }
+                    for item in shortlist
+                }
+                enrichment_errors = {key: value for key, value in enrichment_errors.items() if value}
+                if enrichment_errors:
+                    model.log(
+                        "ERROR",
+                        "Model C intelligence enrichment failed",
+                        errors=enrichment_errors,
+                    )
+                    model.last_decision_at = now
+                    return []
+
         for item in shortlist:
             preview = Signal(
                 symbol=item["symbol"],
@@ -648,7 +693,7 @@ class TradingEngine:
                 opening_high=float(item["hod"]),
                 relative_volume=float(item["relative_volume"]),
                 market_aligned=market_aligned,
-                reason=f"LLM shortlist pre-score {float(item['pre_score']):.2f}",
+                reason=f"Fin-R1 shortlist pre-score {float(item['pre_score']):.2f}",
                 timestamp=now,
                 setup="llm_shortlist",
                 gap_pct=float(item["gap_pct"]),
@@ -709,7 +754,7 @@ class TradingEngine:
                 timeout_seconds=self.config.model_c_llm_timeout_seconds,
             )
         except Exception as exc:
-            model.log("ERROR", "Model C LLM decision failed", error=str(exc))
+            model.log("ERROR", "Model C Fin-R1 decision failed", error=str(exc))
             return []
 
         selected = self.model_c.signal_from_decision(
@@ -724,7 +769,7 @@ class TradingEngine:
         confidence = float(decision.get("confidence", 0.0) or 0.0)
         model.log(
             "SCAN",
-            "Model C desk decision",
+            "Model C Fin-R1 desk decision",
             decision=decision_name,
             symbol=decision.get("symbol"),
             confidence=round(confidence, 4),
