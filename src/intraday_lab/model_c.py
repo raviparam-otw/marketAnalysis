@@ -92,7 +92,7 @@ class ModelCAdvisor:
         system: str,
         payload: dict,
         timeout_seconds: int,
-        max_tokens: int = 1400,
+        max_tokens: int = 2200,
     ) -> dict:
         if not self.configured:
             raise RuntimeError("Model C LLM endpoint is not configured.")
@@ -100,7 +100,9 @@ class ModelCAdvisor:
         endpoint = self.base_url.rstrip("/") + "/chat/completions"
         body = {
             "model": self.model,
-            "temperature": 0.1,
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "repetition_penalty": 1.05,
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
