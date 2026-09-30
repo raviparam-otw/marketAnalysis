@@ -34,7 +34,7 @@ source .venv/bin/activate
 mkdir -p "$RUNTIME_DIR"
 
 NEEDS_SETUP=false
-if ! command -v mlx_lm.server >/dev/null 2>&1; then
+if ! python -c 'import mlx_lm' >/dev/null 2>&1; then
   NEEDS_SETUP=true
 fi
 if [[ ! -f ".models/Fin-R1-4bit/config.json" ]]; then
@@ -56,20 +56,72 @@ if [[ ! -f ".env" ]]; then
   cp .env.example .env
 fi
 
-server_ready() {
-  curl -fsS --max-time 3 "$BASE_URL/models" >/dev/null 2>&1
+server_json() {
+  curl -fsS --max-time 3 "$BASE_URL/models" 2>/dev/null || true
 }
 
-if server_ready; then
-  say "Fin-R1 server is already running"
+server_ready() {
+  [[ -n "$(server_json)" ]]
+}
+
+server_owned_by_us() {
+  local payload
+  payload="$(server_json)"
+  [[ -n "$payload" ]] || return 1
+  printf '%s' "$payload" | python -c '
+import json,sys
+try:
+    data=json.load(sys.stdin).get("data", [])
+    print("yes" if data and data[0].get("owned_by")=="marketAnalysis-local-mlx" else "no")
+except Exception:
+    print("no")
+' | grep -q '^yes$'
+}
+
+server_is_finr1() {
+  local payload
+  payload="$(server_json)"
+  [[ -n "$payload" ]] || return 1
+  printf '%s' "$payload" | python -c '
+import json,sys
+try:
+    data=json.load(sys.stdin).get("data", [])
+    model=(data[0].get("id","") if data else "").lower()
+    print("yes" if "fin-r1" in model or "fin_r1" in model else "no")
+except Exception:
+    print("no")
+' | grep -q '^yes$'
+}
+
+if server_ready && ! server_owned_by_us; then
+  if server_is_finr1; then
+    say "Replacing older mlx_lm.server Fin-R1 process with reliable local server"
+    OLD_PIDS="$(lsof -tiTCP:8080 -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "$OLD_PIDS" ]]; then
+      kill $OLD_PIDS 2>/dev/null || true
+      for _ in $(seq 1 20); do
+        if ! server_ready; then
+          break
+        fi
+        sleep 0.5
+      done
+    fi
+  else
+    fail "Port 8080 is already used by another service. Stop that service and rerun."
+  fi
+fi
+
+if server_owned_by_us; then
+  say "Reliable Fin-R1 server is already running"
 else
-  say "Starting Fin-R1 server in background"
+  say "Starting reliable Fin-R1 server in background"
+  : >"$LOG_FILE"
   nohup bash scripts/start_finr1_macos.sh >"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
 
   READY=false
   for _ in $(seq 1 90); do
-    if server_ready; then
+    if server_owned_by_us; then
       READY=true
       break
     fi
@@ -78,14 +130,14 @@ else
 
   if [[ "$READY" != "true" ]]; then
     echo "Last Fin-R1 server log lines:"
-    tail -n 40 "$LOG_FILE" || true
+    tail -n 80 "$LOG_FILE" || true
     fail "Fin-R1 server did not become ready within 180 seconds."
   fi
 fi
 
 say "Detecting Fin-R1 model ID from the running server"
 MODEL_ID="$(
-  curl -fsS "$BASE_URL/models" |
+  server_json |
     python -c 'import json,sys; data=json.load(sys.stdin).get("data", []); print(data[0]["id"] if data else "")'
 )"
 
@@ -113,7 +165,7 @@ updates = {
     "MODEL_C_LLM_BASE_URL": os.environ["MODEL_C_BASE_URL"],
     "MODEL_C_LLM_MODEL": os.environ["MODEL_C_MODEL_ID"],
     "MODEL_C_LLM_API_KEY": "",
-    "MODEL_C_LLM_TIMEOUT_SECONDS": "120",
+    "MODEL_C_LLM_TIMEOUT_SECONDS": "240",
     "MODEL_C_DECISION_INTERVAL_SECONDS": "60",
     "MODEL_C_SHORTLIST_SIZE": "5",
     "MODEL_C_MIN_CONFIDENCE": "0.68",
@@ -164,6 +216,7 @@ s = Settings()
 print("BASE URL:", s.model_c_llm_base_url)
 print("MODEL:", s.model_c_llm_model)
 print("FULL STACK REQUIRED:", s.model_c_require_full_stack)
+print("KRONOS DEVICE:", s.model_c_kronos_device)
 
 if not s.model_c_llm_base_url:
     raise SystemExit("MODEL_C_LLM_BASE_URL was not loaded from .env")
@@ -172,10 +225,20 @@ if not s.model_c_llm_model:
 PY
 
 say "Running FinBERT + Kronos + Fin-R1 full-stack check"
-PYTHONPATH=src python scripts/check_model_c_stack.py
+if ! PYTHONPATH=src python scripts/check_model_c_stack.py; then
+  echo
+  echo "Last Fin-R1 server log lines:"
+  tail -n 120 "$LOG_FILE" 2>/dev/null || true
+  fail "Model C full-stack check failed."
+fi
 
 say "Running live three-model sample test"
-PYTHONPATH=src python sample_test.py --live-llm
+if ! PYTHONPATH=src python sample_test.py --live-llm; then
+  echo
+  echo "Last Fin-R1 server log lines:"
+  tail -n 120 "$LOG_FILE" 2>/dev/null || true
+  fail "Live A/B/C sample test failed."
+fi
 
 cat <<EOF
 
