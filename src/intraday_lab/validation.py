@@ -314,9 +314,19 @@ def alpaca_checks() -> list[Check]:
         from .broker import PaperBroker
 
         broker = PaperBroker(settings)
-        bars = broker.minute_bars(["SPY"], lookback_hours=2)
-        count = len(bars.get("SPY", []))
-        checks.append(Check("alpaca-market-data", count > 0, f"SPY bars returned={count}"))
+        # Read-only validation must also work after market close, on weekends,
+        # and around holidays. Two hours can legitimately contain no equity
+        # bars, so inspect up to seven calendar days instead.
+        bars = broker.minute_bars(["SPY"], lookback_hours=24 * 7)
+        spy = bars.get("SPY", [])
+        count = len(spy)
+        latest = None
+        if count:
+            latest = getattr(spy.index[-1], "isoformat", lambda: str(spy.index[-1]))()
+        detail = f"SPY bars returned={count}"
+        if latest:
+            detail += f"; latest={latest}"
+        checks.append(Check("alpaca-market-data", count > 0, detail))
     except Exception as exc:
         checks.append(Check("alpaca-market-data", False, str(exc)))
     return checks
