@@ -2,7 +2,7 @@
 
 A local, **paper-trading-only** A/B/C intraday research workstation running three independent decision styles against the same market session.
 
-- **Model A — CONTROL:** Opening Range / VWAP.
+- **Model A — CONTROL:** Opening Range / VWAP across the dynamic universe, with multi-position support and faster failed-breakout exits.
 - **Model B — CHALLENGER:** aggressive Momentum Catalyst action-day strategy.
 - **Model C — ADAPTIVE:** Fin-R1 financial reasoner + Kronos K-line forecaster + FinBERT financial sentiment, orchestrated as a cost-controlled multi-agent desk.
 
