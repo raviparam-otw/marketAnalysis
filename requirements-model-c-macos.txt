@@ -1,0 +1,2 @@
+-r requirements-model-c.txt
+mlx-lm>=0.26

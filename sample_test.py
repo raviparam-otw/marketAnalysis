@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from intraday_lab.config import Settings
+from intraday_lab.finance_stack import FinanceIntelligenceStack
 from intraday_lab.model_c import ModelCAdvisor
 from intraday_lab.models import Decision
 from intraday_lab.risk import RiskManager
@@ -62,6 +63,7 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
     bars = load_sample_bars()
     news = load_json("news.json")
     fixture = load_json("model-c-responses.json")
+    intelligence_fixture = load_json("model-c-intelligence.json")
     now = bars["SPY"].index.max().to_pydatetime()
     aligned = market_alignment(bars)
 
@@ -89,13 +91,15 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
         news.get("BETA"),
     )
 
-    # Model C — adaptive LLM desk. Offline mode uses a checked-in deterministic
-    # LLM response fixture. --live-llm sends the same shortlist to your configured
-    # local/open-source OpenAI-compatible endpoint.
+    # Model C — Fin-R1 reasoner + Kronos K-line forecast + FinBERT sentiment.
+    # Offline mode uses checked-in deterministic evidence/LLM fixtures. --live-llm
+    # runs the real local FinBERT/Kronos stack and calls the configured Fin-R1 endpoint.
+    intelligence = FinanceIntelligenceStack.from_settings(config) if live_llm else None
     advisor = ModelCAdvisor(
         config.model_c_llm_base_url,
         config.model_c_llm_model,
         config.model_c_llm_api_key,
+        intelligence=intelligence,
     )
     universe = ["ALPHA", "BETA", "GAMMA"]
     shortlist = advisor.shortlist(
@@ -107,6 +111,18 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
         locked=set(),
         limit=config.model_c_shortlist_size,
     )
+
+    if live_llm:
+        shortlist = advisor.enrich_shortlist(
+            shortlist,
+            bars_by_symbol=bars,
+            catalysts={symbol: news.get(symbol) for symbol in universe},
+        )
+    else:
+        shortlist = [
+            dict(item) | intelligence_fixture.get(item["symbol"], {})
+            for item in shortlist
+        ]
 
     market_context = {
         "timestamp": now.isoformat(),
@@ -177,7 +193,14 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
                 "confidence": float(decision_c.get("confidence", 0.0) or 0.0),
                 "reason": signal_c.reason if signal_c else decision_c.get("rationale"),
                 "shortlist": [item["symbol"] for item in shortlist],
-                "llm_mode": "LIVE ENDPOINT" if live_llm else "FIXTURE",
+                "llm_mode": "FIN-R1 LIVE" if live_llm else "FIXTURE",
+                "stack": {
+                    item["symbol"]: {
+                        "finbert": item.get("finbert"),
+                        "kronos": item.get("kronos"),
+                    }
+                    for item in shortlist
+                },
                 "risk": size_signal(config, "C", signal_c, capital_per_model)
                 if signal_c is not None
                 else None,
@@ -202,7 +225,7 @@ def main() -> int:
     parser.add_argument(
         "--live-llm",
         action="store_true",
-        help="Use your configured Model C OpenAI-compatible endpoint instead of the deterministic fixture.",
+        help="Run real FinBERT + Kronos + Fin-R1 instead of deterministic Model C fixtures.",
     )
     parser.add_argument(
         "--capital",

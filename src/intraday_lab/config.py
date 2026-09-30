@@ -92,17 +92,31 @@ class Settings:
     momentum_require_news: bool = field(default_factory=lambda: _bool("MOMENTUM_REQUIRE_NEWS", False))
     momentum_min_score: float = field(default_factory=lambda: _float("MOMENTUM_MIN_SCORE", 5.0))
 
-    # Model C - LLM adaptive / multi-agent desk. The endpoint can be Ollama, vLLM,
-    # Hugging Face router, or any OpenAI-compatible open-source model host.
+    # Model C - finance-native adaptive stack.
+    # Fin-R1 is the primary reasoning LLM. Kronos contributes K-line forecasts and
+    # FinBERT contributes finance-specific headline sentiment.
     model_c_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_ENABLED", True))
     model_c_execution_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_EXECUTION_ENABLED", True))
     model_c_llm_base_url: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_BASE_URL", ""))
-    model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", ""))
+    model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", "Fin-R1"))
     model_c_llm_api_key: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_API_KEY", ""))
-    model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "30")))
+    model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "60")))
     model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "60")))
     model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "5")))
     model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.68))
+    model_c_require_full_stack: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_FULL_STACK", True))
+
+    model_c_finbert_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_FINBERT_ENABLED", True))
+    model_c_finbert_model: str = field(default_factory=lambda: os.getenv("MODEL_C_FINBERT_MODEL", "ProsusAI/finbert"))
+
+    model_c_kronos_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_KRONOS_ENABLED", True))
+    model_c_kronos_repo_path: str = field(
+        default_factory=lambda: os.getenv("MODEL_C_KRONOS_REPO_PATH", str(ROOT / ".models" / "Kronos"))
+    )
+    model_c_kronos_model: str = field(default_factory=lambda: os.getenv("MODEL_C_KRONOS_MODEL", "NeoQuasar/Kronos-small"))
+    model_c_kronos_tokenizer: str = field(default_factory=lambda: os.getenv("MODEL_C_KRONOS_TOKENIZER", "NeoQuasar/Kronos-Tokenizer-base"))
+    model_c_kronos_lookback: int = field(default_factory=lambda: int(os.getenv("MODEL_C_KRONOS_LOOKBACK", "120")))
+    model_c_kronos_pred_len: int = field(default_factory=lambda: int(os.getenv("MODEL_C_KRONOS_PRED_LEN", "5")))
     model_c_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_C_RISK_PER_TRADE_PCT", 0.0075))
     model_c_max_position_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_POSITION_PCT", 0.25))
     model_c_daily_loss_pct: float = field(default_factory=lambda: _float("MODEL_C_DAILY_LOSS_PCT", 0.03))
@@ -200,6 +214,8 @@ class Settings:
             raise ValueError("MODEL_C_MIN_CONFIDENCE must be between 0 and 1.")
         if self.model_c_llm_timeout_seconds <= 0:
             raise ValueError("MODEL_C_LLM_TIMEOUT_SECONDS must be positive.")
+        if self.model_c_kronos_lookback <= 0 or self.model_c_kronos_pred_len <= 0:
+            raise ValueError("Model C Kronos lookback and prediction length must be positive.")
 
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")

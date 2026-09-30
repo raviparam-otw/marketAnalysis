@@ -90,6 +90,7 @@ def offline_checks() -> list[Check]:
         "config",
         "models",
         "experiment",
+        "finance_stack",
         "universe",
         "strategy",
         "risk",

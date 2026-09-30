@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from urllib import request
 from zoneinfo import ZoneInfo
 
@@ -16,31 +17,45 @@ EASTERN = ZoneInfo("America/New_York")
 
 
 def _clean_json_text(text: str) -> str:
+    """Extract a JSON object even when a reasoning model emits think/answer wrappers."""
     value = text.strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", value, flags=re.I | re.S)
+
+    answer = re.search(r"<answer>\s*(.*?)\s*</answer>", value, flags=re.I | re.S)
+    if answer:
+        value = answer.group(1).strip()
+
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", value, flags=re.I | re.S)
     if fenced:
-        return fenced.group(1)
-    start = value.find("{")
-    end = value.rfind("}")
-    if start >= 0 and end > start:
-        return value[start : end + 1]
+        value = fenced.group(1).strip()
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(value):
+        if char != "{":
+            continue
+        try:
+            parsed, consumed = decoder.raw_decode(value[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return value[index : index + consumed]
+
     return value
 
 
 @dataclass(frozen=True)
 class ModelCAdvisor:
-    """Model C: cost-controlled multi-agent LLM desk for PAPER execution.
+    """Model C: Fin-R1 reasoner + Kronos K-line forecast + FinBERT sentiment.
 
-    The design follows the TradingAgents idea without importing a heavyweight agent
-    framework into the execution path. One analyst-desk call produces technical,
-    sentiment, bull/bear and risk views for a deterministic shortlist. A second
-    portfolio-manager call chooses at most one long entry. The broker remains outside
-    this class; only TradingEngine can submit PAPER orders.
+    The deterministic scanner creates a small shortlist. FinBERT scores supplied
+    finance headlines, Kronos forecasts short-horizon K-lines, and Fin-R1 performs
+    the analyst/risk/portfolio reasoning. The broker remains outside this class;
+    only TradingEngine can submit PAPER orders.
     """
 
     base_url: str
     model: str
     api_key: str = ""
+    intelligence: Any | None = None
 
     @property
     def configured(self) -> bool:
@@ -48,22 +63,25 @@ class ModelCAdvisor:
 
     def status(self, execution_enabled: bool = False) -> dict:
         active = self.configured and execution_enabled
+        stack = self.intelligence.status() if self.intelligence is not None else {}
         return {
             "name": "C",
             "role": "ADAPTIVE",
-            "label": "LLM Multi-Agent",
+            "label": "Fin-R1 + Kronos + FinBERT",
             "configured": self.configured,
             "execution_enabled": active,
             "model": self.model or None,
             "base_url": self.base_url or None,
-            "architecture": "technical + sentiment + bull/bear + risk + portfolio manager",
+            "reasoner": "Fin-R1",
+            "stack": stack,
+            "architecture": "FinBERT sentiment + Kronos forecast + Fin-R1 analyst/risk/portfolio manager",
             "message": (
-                "Configured and eligible for PAPER execution."
+                "Fin-R1 stack configured and eligible for PAPER execution."
                 if active
                 else (
-                    "LLM connected; PAPER execution disabled by configuration."
+                    "Fin-R1 connected; PAPER execution disabled by configuration."
                     if self.configured
-                    else "Configure MODEL_C_LLM_BASE_URL and MODEL_C_LLM_MODEL."
+                    else "Start Fin-R1 and configure MODEL_C_LLM_BASE_URL."
                 )
             ),
         }
@@ -74,7 +92,7 @@ class ModelCAdvisor:
         system: str,
         payload: dict,
         timeout_seconds: int,
-        max_tokens: int = 1400,
+        max_tokens: int = 2200,
     ) -> dict:
         if not self.configured:
             raise RuntimeError("Model C LLM endpoint is not configured.")
@@ -82,7 +100,9 @@ class ModelCAdvisor:
         endpoint = self.base_url.rstrip("/") + "/chat/completions"
         body = {
             "model": self.model,
-            "temperature": 0.1,
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "repetition_penalty": 1.05,
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
@@ -239,6 +259,21 @@ class ModelCAdvisor:
         candidates.sort(key=lambda item: item["pre_score"], reverse=True)
         return candidates[: max(1, limit)]
 
+    def enrich_shortlist(
+        self,
+        shortlist: list[dict],
+        *,
+        bars_by_symbol: dict[str, pd.DataFrame],
+        catalysts: dict[str, dict | None],
+    ) -> list[dict]:
+        if self.intelligence is None:
+            return shortlist
+        return self.intelligence.enrich(
+            shortlist,
+            bars_by_symbol=bars_by_symbol,
+            catalysts=catalysts,
+        )
+
     def decide(
         self,
         shortlist: list[dict],
@@ -254,12 +289,14 @@ class ModelCAdvisor:
             }
 
         analyst_system = (
-            "You are the analyst committee of an intraday trading desk. "
+            "You are Fin-R1 acting as the analyst committee of an intraday trading desk. "
             "Act as four concise specialists: technical analyst, financial-news/sentiment analyst, "
-            "bull researcher, and bear researcher. Evaluate only the supplied evidence; never invent "
-            "fundamentals, prices, headlines, or events. This is long-only intraday PAPER trading. "
-            "Return JSON only with key 'candidates', an array. Each item must contain symbol, "
-            "technical_view, sentiment_view, bull_case, bear_case, risk_flags, and desk_score from 0 to 100. "
+            "bull researcher, and bear researcher. The input may include deterministic market features, "
+            "ProsusAI FinBERT sentiment probabilities, and a Kronos short-horizon K-line forecast. "
+            "Treat FinBERT and Kronos as evidence, not certainty. Evaluate only supplied evidence; never "
+            "invent fundamentals, prices, headlines, forecasts, or events. This is long-only PAPER trading. "
+            "Return JSON only with key 'candidates', an array. Each item must contain symbol, technical_view, "
+            "sentiment_view, forecast_view, bull_case, bear_case, risk_flags, and desk_score from 0 to 100. "
             "Keep each text field under 40 words."
         )
         analyst_report = self._chat_json(
@@ -269,11 +306,12 @@ class ModelCAdvisor:
         )
 
         manager_system = (
-            "You are the portfolio manager and risk manager of an intraday PAPER-trading desk. "
-            "Using the raw shortlist and analyst committee report, choose at most ONE long entry. "
-            "Prefer HOLD when evidence conflicts. Never select a symbol outside the shortlist. "
-            "Return JSON only with: decision ('BUY' or 'HOLD'), symbol (string or null), "
-            "confidence (0 to 1), rationale (max 60 words), risks (array of short strings), "
+            "You are Fin-R1 acting as the portfolio manager and risk manager of an intraday PAPER-trading desk. "
+            "Use the raw shortlist, FinBERT sentiment, Kronos forecast, and analyst committee report. "
+            "Choose at most ONE long entry. Prefer HOLD when evidence conflicts, when the Kronos downside "
+            "meaningfully outweighs upside, or when sentiment is strongly negative without offsetting evidence. "
+            "Never select a symbol outside the shortlist. Return JSON only with: decision ('BUY' or 'HOLD'), "
+            "symbol (string or null), confidence (0 to 1), rationale (max 60 words), risks (array of short strings), "
             "invalidation (max 30 words), stop_pct (decimal, normally 0.005 to 0.03), "
             "take_profit_pct (decimal, normally 0.01 to 0.08)."
         )

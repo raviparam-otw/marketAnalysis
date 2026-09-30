@@ -4,7 +4,7 @@ A local, **paper-trading-only** A/B/C intraday research workstation running thre
 
 - **Model A — CONTROL:** Opening Range / VWAP.
 - **Model B — CHALLENGER:** aggressive Momentum Catalyst action-day strategy.
-- **Model C — ADAPTIVE:** cost-controlled LLM multi-agent desk (technical + sentiment + bull/bear + risk + portfolio manager).
+- **Model C — ADAPTIVE:** Fin-R1 financial reasoner + Kronos K-line forecaster + FinBERT financial sentiment, orchestrated as a cost-controlled multi-agent desk.
 
 The application is intentionally locked to Alpaca paper trading.
 
@@ -27,16 +27,77 @@ A trade is also capped by actual Alpaca cash and remaining global exposure room.
 
 ## Model C architecture
 
-Model C is a real PAPER execution participant when an LLM endpoint is configured. It does **not** call the LLM for every stock every 10 seconds. A deterministic activity pre-filter ranks the universe first, then only the top shortlist is sent to the LLM once per configured decision interval.
+Model C is now a finance-native three-model intelligence stack:
 
-The LLM workflow uses two cost-controlled calls inspired by the TradingAgents research design:
+1. **FinBERT — financial sentiment.** The supplied company/news headline is scored as positive, negative, or neutral before it reaches the reasoning layer.
+2. **Kronos-small — K-line forecast.** The candidate's recent OHLCV bars are passed through Kronos to produce a short-horizon direction, predicted close, upside and downside summary.
+3. **Fin-R1 — financial reasoner.** Fin-R1 receives the deterministic market features plus FinBERT sentiment and Kronos forecast. It runs the analyst committee and portfolio/risk-manager reasoning, then returns at most one BUY or HOLD decision.
 
-1. **Analyst committee** — technical view, financial-news/sentiment view, bull case, bear case, and risk flags for the shortlist.
-2. **Portfolio/risk manager** — chooses at most one long BUY or HOLD, with confidence, rationale, invalidation, and stop guidance.
+Model C still does **not** call heavy models for the entire market universe. The deterministic activity scanner first reduces the universe to the top shortlist. FinBERT and Kronos run only on that shortlist, and Fin-R1 is called once per configured decision interval.
 
-The result must refer to a symbol from the supplied shortlist and must exceed `MODEL_C_MIN_CONFIDENCE` before the engine can place a PAPER order. The engine, not the LLM, owns sizing, exposure limits, actual-fill stop rebasing, exits, and emergency flattening.
+The execution path is therefore:
 
-Model C accepts any OpenAI-compatible endpoint serving an open-source model. Examples include local Ollama/vLLM or the Hugging Face OpenAI-compatible router. For a finance-tuned stack, FinGPT models can be self-hosted behind the same interface. The Trading-R1 checkpoint is not assumed because its public model release is not currently available.
+```text
+Market universe
+  -> deterministic activity filter
+  -> shortlist
+  -> FinBERT sentiment
+  -> Kronos K-line forecast
+  -> Fin-R1 analyst committee
+  -> Fin-R1 portfolio/risk manager
+  -> confidence gate
+  -> deterministic position sizing/risk engine
+  -> Alpaca PAPER order
+```
+
+The LLM cannot invent a ticker: a Fin-R1 BUY is accepted only when its symbol exists in the engine-generated shortlist. It must also exceed `MODEL_C_MIN_CONFIDENCE`. Position sizing, model/account exposure, actual-fill risk rebasing, exit management, daily loss limits, and emergency flattening remain deterministic and outside the LLM.
+
+With `MODEL_C_REQUIRE_FULL_STACK=true` (the default), Model C will **not** submit a PAPER entry if Fin-R1, FinBERT, or Kronos is unavailable.
+
+### Install Model C on Apple Silicon
+
+Model weights are intentionally excluded from Git. Run:
+
+```bash
+git pull
+source .venv/bin/activate
+bash scripts/setup_model_c_macos.sh
+```
+
+The setup script:
+
+- installs the separate Model C dependencies;
+- converts the official `SUFE-AIFLM-Lab/Fin-R1` weights to a local 4-bit MLX checkpoint under `.models/Fin-R1-4bit`;
+- clones the official Kronos implementation under `.models/Kronos`;
+- caches `NeoQuasar/Kronos-small` and `NeoQuasar/Kronos-Tokenizer-base`;
+- caches `ProsusAI/finbert`.
+
+The `.models/` directory is git-ignored.
+
+Start Fin-R1 in a separate terminal:
+
+```bash
+source .venv/bin/activate
+bash scripts/start_finr1_macos.sh
+```
+
+The local Fin-R1 server listens on `http://127.0.0.1:8080/v1`.
+
+Then verify the complete finance stack without placing any Alpaca orders:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python scripts/check_model_c_stack.py
+```
+
+A successful run ends with:
+
+```text
+[PASS] FinBERT sentiment
+[PASS] Kronos forecasts
+[PASS] Fin-R1 reasoning endpoint
+RESULT: MODEL C FULL STACK READY
+```
 
 ## Trader-style controls
 
@@ -92,7 +153,8 @@ Files:
 
 - `sample-data/market-bars.csv` — deterministic 1-minute bars for ALPHA (Model A), BETA (Model B), GAMMA (Model C), plus SPY and QQQ.
 - `sample-data/news.json` — synthetic catalysts for the momentum and LLM paths.
-- `sample-data/model-c-responses.json` — deterministic analyst-committee and portfolio-manager responses so Model C can be tested even before a local LLM is running.
+- `sample-data/model-c-responses.json` — deterministic Fin-R1 analyst-committee and portfolio-manager responses.
+- `sample-data/model-c-intelligence.json` — deterministic FinBERT sentiment and Kronos forecast evidence.
 - `sample_test.py` — loads the fixture, runs A/B/C, applies each model's risk sizing, and submits **no orders**.
 
 Run the complete offline sample:
@@ -113,13 +175,13 @@ Expected ending:
 RESULT: READY
 ```
 
-To test the same Model C shortlist through your real configured open-source LLM endpoint instead of the deterministic fixture:
+To run the exact same sample through the **real local Model C stack** instead of fixtures:
 
 ```bash
 PYTHONPATH=src python sample_test.py --live-llm
 ```
 
-That command still does not connect to Alpaca or place orders; it only replaces the checked-in Model C response fixture with your configured LLM response.
+In this mode the sample uses real FinBERT sentiment, real Kronos forecasts, and the local Fin-R1 endpoint. It still does not connect to Alpaca or submit orders.
 
 ## Validate before running
 
@@ -168,7 +230,7 @@ Open `http://127.0.0.1:8000`.
 
 - Model allocations are virtual ledgers inside one Alpaca paper account.
 - The current engine is polling-based; a full market/order WebSocket execution layer is still a future upgrade.
-- Model C requires a configured OpenAI-compatible open-source LLM endpoint before it can trade.
+- Model C requires the local Fin-R1 endpoint plus FinBERT and Kronos when full-stack mode is enabled.
 - Model B's RVOL remains a short-term bar measure; same-time-of-day multi-session RVOL is still planned.
 - Float filtering and full Level 2/order-book confirmation require a separate reliable provider.
 - Stops are application-managed today, so the process must remain available while positions are open.
