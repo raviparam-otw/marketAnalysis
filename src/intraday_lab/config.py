@@ -223,6 +223,15 @@ class Settings:
         if self.model_c_kronos_lookback <= 0 or self.model_c_kronos_pred_len <= 0:
             raise ValueError("Model C Kronos lookback and prediction length must be positive.")
 
+        if not (0 < self.model_a_weakness_exit_pct < 1):
+            raise ValueError("MODEL_A_WEAKNESS_EXIT_PCT must be between 0 and 1.")
+        if self.model_a_failed_breakout_minutes <= 0:
+            raise ValueError("MODEL_A_FAILED_BREAKOUT_MINUTES must be positive.")
+        if not (0 <= self.model_a_failed_breakout_max_gain_pct < 1):
+            raise ValueError("MODEL_A_FAILED_BREAKOUT_MAX_GAIN_PCT must be between 0 and 1.")
+        if not (0 < self.model_a_failed_breakout_exit_pct < 1):
+            raise ValueError("MODEL_A_FAILED_BREAKOUT_EXIT_PCT must be between 0 and 1.")
+
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")
         if self.starting_balance <= 0:
