@@ -589,6 +589,162 @@ class TradingEngine:
                     open_positions=len(model.guards),
                 )
 
+    async def _scan_model_c(
+        self,
+        *,
+        model: ModelRuntime,
+        bars: dict,
+        market_aligned: bool,
+        now: datetime,
+        locked: set[str],
+    ) -> list[Signal]:
+        if not self.config.model_c_enabled:
+            if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
+                model.log("SCAN", "Model C disabled by configuration")
+                model.last_scan_log_at = now
+            return []
+
+        if not self.model_c.configured:
+            if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
+                model.log(
+                    "WARN",
+                    "Model C waiting for LLM endpoint",
+                    required=["MODEL_C_LLM_BASE_URL", "MODEL_C_LLM_MODEL"],
+                )
+                model.last_scan_log_at = now
+            return []
+
+        if (
+            model.last_decision_at is not None
+            and now - model.last_decision_at
+            < timedelta(seconds=self.config.model_c_decision_interval_seconds)
+        ):
+            return []
+
+        catalysts = {
+            symbol: self.news.catalyst_for(symbol)
+            for symbol in self.universe
+            if symbol not in locked
+        }
+        shortlist = self.model_c.shortlist(
+            self.universe,
+            bars,
+            now=now,
+            catalysts=catalysts,
+            market_aligned=market_aligned,
+            locked=locked,
+            limit=self.config.model_c_shortlist_size,
+        )
+
+        for item in shortlist:
+            preview = Signal(
+                symbol=item["symbol"],
+                decision=Decision.HOLD,
+                price=float(item["price"]),
+                vwap=float(item["vwap"]),
+                opening_high=float(item["hod"]),
+                relative_volume=float(item["relative_volume"]),
+                market_aligned=market_aligned,
+                reason=f"LLM shortlist pre-score {float(item['pre_score']):.2f}",
+                timestamp=now,
+                setup="llm_shortlist",
+                gap_pct=float(item["gap_pct"]),
+                change_pct=float(item["change_pct"]),
+                stop_price=float(item["price"]) * 0.985,
+                catalyst=bool(item["catalyst"]),
+                catalyst_headline=item.get("catalyst_headline"),
+                score=float(item["pre_score"]),
+                context={"candidate": item},
+            )
+            model.latest_signals[item["symbol"]] = preview.to_dict()
+
+        if not shortlist:
+            if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
+                model.log("SCAN", "Model C found no active shortlist", scanned=len(self.universe))
+                model.last_scan_log_at = now
+            model.last_decision_at = now
+            return []
+
+        benchmark_context = {}
+        for benchmark in ("SPY", "QQQ"):
+            frame = bars.get(benchmark)
+            if frame is None or frame.empty:
+                continue
+            current = float(frame.iloc[-1]["close"])
+            previous = float(frame.iloc[-2]["close"]) if len(frame) >= 2 else current
+            benchmark_context[benchmark] = {
+                "price": current,
+                "last_bar_change_pct": ((current / previous) - 1) * 100 if previous else 0.0,
+            }
+
+        market_context = {
+            "timestamp": now.isoformat(timespec="seconds"),
+            "market_aligned": market_aligned,
+            "benchmarks": benchmark_context,
+            "paper_only": True,
+            "long_only": True,
+            "open_model_c_positions": list(model.guards),
+            "remaining_model_exposure": round(
+                max(
+                    0.0,
+                    model.risk.max_exposure
+                    - sum(
+                        guard.quantity * (guard.current_price or guard.entry_price)
+                        for guard in model.guards.values()
+                    ),
+                ),
+                2,
+            ),
+        }
+
+        model.last_decision_at = now
+        try:
+            decision = await asyncio.to_thread(
+                self.model_c.decide,
+                shortlist,
+                market_context=market_context,
+                timeout_seconds=self.config.model_c_llm_timeout_seconds,
+            )
+        except Exception as exc:
+            model.log("ERROR", "Model C LLM decision failed", error=str(exc))
+            return []
+
+        selected = self.model_c.signal_from_decision(
+            shortlist,
+            decision,
+            now=now,
+            market_aligned=market_aligned,
+            min_confidence=self.config.model_c_min_confidence,
+        )
+
+        decision_name = str(decision.get("decision", "HOLD")).upper()
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+        model.log(
+            "SCAN",
+            "Model C desk decision",
+            decision=decision_name,
+            symbol=decision.get("symbol"),
+            confidence=round(confidence, 4),
+            shortlist=[item["symbol"] for item in shortlist],
+            rationale=decision.get("rationale"),
+        )
+        model.last_scan_log_at = now
+
+        if selected is None:
+            return []
+
+        model.latest_signals[selected.symbol] = selected.to_dict()
+        if not self.config.model_c_execution_enabled:
+            model.log(
+                "CONTROL",
+                "Model C BUY kept in shadow mode",
+                symbol=selected.symbol,
+                confidence=round(confidence, 4),
+            )
+            return []
+
+        return [selected]
+
     async def _manage_model_position(
         self,
         model: ModelRuntime,
