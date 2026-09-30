@@ -38,7 +38,7 @@ class Settings:
     # Historical/backtest baseline. The live A/B engine does NOT assume this balance.
     starting_balance: float = field(default_factory=lambda: _float("STARTING_BALANCE", 100_000))
 
-    # Legacy fallback only. Live sessions freeze 50/50 allocations from Alpaca equity at Start.
+    # Legacy fallback only. Live sessions freeze equal A/B/C allocations from Alpaca equity at Start.
     model_capital: float = field(default_factory=lambda: _float("MODEL_CAPITAL", 50_000))
 
     # Risk scales with each model's frozen session allocation.
@@ -50,9 +50,14 @@ class Settings:
     max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MAX_TRADES_PER_DAY", "6")))
     max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MAX_CONSECUTIVE_LOSSES", "2")))
 
-    # Model A remains the control, but can now deploy more than one position.
+    # Model A remains the control, but can deploy several positions and cut failed
+    # breakouts faster than the shared generic stop logic.
     model_a_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_OPEN_POSITIONS", "3")))
     model_a_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXPOSURE_PCT", 0.65))
+    model_a_weakness_exit_pct: float = field(default_factory=lambda: _float("MODEL_A_WEAKNESS_EXIT_PCT", 0.006))
+    model_a_failed_breakout_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_FAILED_BREAKOUT_MINUTES", "5")))
+    model_a_failed_breakout_max_gain_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_MAX_GAIN_PCT", 0.003))
+    model_a_failed_breakout_exit_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_EXIT_PCT", 0.002))
 
     # Model B is intentionally aggressive for PAPER experimentation.
     model_b_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_B_RISK_PER_TRADE_PCT", 0.01))
