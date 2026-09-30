@@ -928,8 +928,10 @@ class TradingEngine:
             session_state = self.session.state
         else:
             starting_equity = account_equity
-            preview = round(account_equity / 2.0, 2) if account_equity else 0.0
-            allocations = {"A": preview, "B": round(account_equity - preview, 2) if account_equity else 0.0}
+            preview_a = round(account_equity / 3.0, 2) if account_equity else 0.0
+            preview_b = round(account_equity / 3.0, 2) if account_equity else 0.0
+            preview_c = round(account_equity - preview_a - preview_b, 2) if account_equity else 0.0
+            allocations = {"A": preview_a, "B": preview_b, "C": preview_c}
             session_id = None
             started_at = None
             session_state = "READY"
@@ -1016,7 +1018,8 @@ class TradingEngine:
                 "account_pnl": account_pnl,
                 "allocation_a": float(allocations.get("A", 0.0)),
                 "allocation_b": float(allocations.get("B", 0.0)),
-                "split": "50 / 50",
+                "allocation_c": float(allocations.get("C", 0.0)),
+                "split": "A/B/C equal thirds",
                 "global_exposure": total_exposure,
                 "global_exposure_limit": starting_equity * (
                     max(self.config.max_account_exposure_pct, 0.80)
@@ -1038,7 +1041,10 @@ class TradingEngine:
                 "can_flatten": True,
             },
             "models": models,
-            "model_c": self.model_c.status(),
+            "model_c": self.model_c.status(
+                execution_enabled=self.config.model_c_execution_enabled
+                and self.config.model_c_enabled
+            ),
             "universe": {
                 "symbols": self.universe,
                 "stats": self.universe_stats,
