@@ -57,3 +57,47 @@ def test_model_b_action_day_can_qualify_without_news_when_momentum_score_is_stro
     )
     assert signal.score >= cfg.momentum_min_score
     assert signal.context["momentum_trigger"] is True
+
+
+def test_model_a_rejects_one_bar_false_breakout_without_hold_confirmation():
+    index = pd.date_range("2026-09-25 09:30", periods=25, freq="min", tz=EASTERN)
+    close = np.array([100.0] * 24 + [101.0])
+    bars = pd.DataFrame(
+        {
+            "open": np.array([100.0] * 24 + [100.2]),
+            "high": close + 0.1,
+            "low": close - 0.2,
+            "close": close,
+            "volume": [100] * 24 + [1000],
+        },
+        index=index,
+    )
+    signal = OpeningRangeVwapStrategy(1.5).evaluate(
+        "FALSE", bars, True, datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN)
+    )
+    assert signal.decision == Decision.HOLD
+    assert "breakout hold" in signal.context["failed_conditions"]
+
+
+def test_model_a_rejects_extended_reentry_chase():
+    index = pd.date_range("2026-09-25 09:30", periods=60, freq="min", tz=EASTERN)
+    close = np.concatenate([
+        np.full(15, 100.0),
+        np.linspace(100.2, 108.0, 45),
+    ])
+    bars = pd.DataFrame(
+        {
+            "open": close - 0.1,
+            "high": close + 0.1,
+            "low": close - 0.2,
+            "close": close,
+            "volume": [100] * 55 + [400, 500, 600, 700, 1000],
+        },
+        index=index,
+    )
+    signal = OpeningRangeVwapStrategy(1.5).evaluate(
+        "CHASE", bars, True, datetime(2026, 9, 25, 10, 29, tzinfo=EASTERN)
+    )
+    assert signal.decision == Decision.HOLD
+    assert "not extended" in signal.context["failed_conditions"]
+    assert signal.context["extension_from_or_pct"] > 6.0
