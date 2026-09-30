@@ -105,6 +105,8 @@ bash scripts/start_finr1_macos.sh
 
 The local Fin-R1 server listens on `http://127.0.0.1:8080/v1`.
 
+The launcher uses the repository's **single-threaded MLX server wrapper** rather than `mlx_lm.server`. This avoids worker-thread/Metal stream failures that can cause an empty HTTP response on some Apple Silicon/Python 3.13 combinations.
+
 Then verify the complete finance stack without placing any Alpaca orders:
 
 ```bash
