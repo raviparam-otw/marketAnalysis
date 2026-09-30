@@ -130,13 +130,51 @@ class TradingEngine:
     def _configure_allocations(self, session: ExperimentSession) -> None:
         for name, model in self.models.items():
             capital = float(session.allocations.get(name, 0.0))
-            # A legacy same-day A/B session can be opened for inspection without
-            # retroactively changing its allocation. Model C becomes active on the
-            # next newly-created A/B/C session.
             if capital <= 0:
                 continue
             model.risk.configure_session_capital(capital)
             model.peak_equity = max(model.peak_equity, capital)
+
+    @staticmethod
+    def _is_three_way_session(session: ExperimentSession | None) -> bool:
+        if session is None:
+            return False
+        allocations = session.allocations
+        return (
+            set(allocations) == {"A", "B", "C"}
+            and all(float(allocations.get(name, 0.0)) > 0 for name in ("A", "B", "C"))
+        )
+
+    def upgrade_legacy_session_if_flat(
+        self,
+        *,
+        account: dict,
+        positions: list,
+        open_orders: list,
+        now: datetime | None = None,
+    ) -> bool:
+        """Migrate a same-day legacy A/B session only when the paper account is flat."""
+        current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
+        existing = self.session_store.load_today(current)
+        if existing is None or self._is_three_way_session(existing):
+            self.session = existing
+            return False
+        if positions or open_orders:
+            return False
+
+        self.session = self.session_store.replace_legacy_with_three_way(
+            float(account["equity"]),
+            current,
+        )
+        self._configure_allocations(self.session)
+        for model in self.models.values():
+            model.log(
+                "CONTROL",
+                "Legacy A/B session migrated to equal A/B/C split",
+                allocation=round(model.capital, 2),
+                session_id=self.session.session_id,
+            )
+        return True
 
     async def start(self) -> None:
         if self.running:
@@ -160,6 +198,16 @@ class TradingEngine:
             )
 
         positions = await asyncio.to_thread(self.broker.positions)
+
+        migrated = self.upgrade_legacy_session_if_flat(
+            account=account,
+            positions=positions,
+            open_orders=open_orders,
+            now=now,
+        )
+        if migrated:
+            existing_session = self.session
+
         if positions and existing_session is None:
             symbols = ", ".join(sorted(str(position.symbol) for position in positions))
             raise RuntimeError(

@@ -37,3 +37,24 @@ def test_session_state_is_persisted(tmp_path):
     loaded = store.load_today(NOW)
     assert loaded is not None
     assert loaded.state == "PAUSED"
+
+
+def test_legacy_ab_session_can_be_replaced_with_three_way_split(tmp_path):
+    store = ExperimentSessionStore(tmp_path)
+    legacy = store.create_or_load(99_733.74, NOW)
+    legacy.allocations = {"A": 49_866.87, "B": 49_866.87}
+    legacy.state = "STOPPED"
+    store.save(legacy, NOW)
+
+    migrated = store.replace_legacy_with_three_way(99_588.70, NOW)
+
+    assert migrated.session_id != legacy.session_id
+    assert migrated.starting_equity == 99_588.70
+    assert migrated.allocations == {
+        "A": 33_196.23,
+        "B": 33_196.23,
+        "C": 33_196.24,
+    }
+    assert migrated.state == "READY"
+    assert round(sum(migrated.allocations.values()), 2) == 99_588.70
+    assert (tmp_path / "session-2026-09-28.legacy-ab.json").exists()
