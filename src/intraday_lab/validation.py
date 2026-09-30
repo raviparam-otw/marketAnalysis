@@ -299,12 +299,26 @@ def alpaca_checks() -> list[Check]:
                 f"status={account.get('status')}",
             )
         )
-        split = account["equity"] / 3
+        with tempfile.TemporaryDirectory() as directory:
+            preview_store = ExperimentSessionStore(directory)
+            preview = preview_store.create_or_load(
+                account["equity"],
+                datetime.now(EASTERN),
+            )
+        allocations = preview.allocations
+        allocation_total = round(sum(allocations.values()), 2)
+        split_ok = (
+            account["equity"] > 0
+            and set(allocations) == {"A", "B", "C"}
+            and allocation_total == round(account["equity"], 2)
+            and max(allocations.values()) - min(allocations.values()) <= 0.01
+        )
         checks.append(
             Check(
                 "alpaca-allocation-preview",
-                account["equity"] > 0,
-                f"current equity={account['equity']:.2f}; each model≈{split:.2f}",
+                split_ok,
+                f"current equity={account['equity']:.2f}; "
+                f"A={allocations['A']:.2f}, B={allocations['B']:.2f}, C={allocations['C']:.2f}",
             )
         )
     except Exception as exc:
