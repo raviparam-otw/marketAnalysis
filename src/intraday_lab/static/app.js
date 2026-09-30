@@ -52,8 +52,9 @@ function renderSession(d){
     ['Account equity',money.format(account.equity||0),'live Alpaca paper'],
     [started?'Session start':'Current balance',money.format(e.starting_equity||account.equity||0),started?'frozen baseline':'split when started'],
     ['Session P&L',money.format(pnl),started?(pnl>=0?'above baseline':'below baseline'):'not started',pnl<0?'neg':pnl>0?'pos':''],
-    ['Model A allocation',money.format(e.allocation_a||0),started?'frozen 50%':'preview 50%'],
-    ['Model B allocation',money.format(e.allocation_b||0),started?'frozen 50%':'preview 50%'],
+    ['Model A allocation',money.format(e.allocation_a||0),started?'frozen 1/3':'preview 1/3'],
+    ['Model B allocation',money.format(e.allocation_b||0),started?'frozen 1/3':'preview 1/3'],
+    ['Model C allocation',money.format(e.allocation_c||0),started?'frozen 1/3':'preview 1/3'],
     ['Gross exposure',money.format(exposure),`${exposurePct.toFixed(1)}% of risk cap`],
     ['Entry window',e.entry_window_open?'OPEN':'CLOSED',e.entry_window_open?'entries permitted by clock':'management only',e.entry_window_open?'pos':''],
     ['Engine health',health,e.last_cycle_error||`${e.cycle_count||0} cycles`,health==='ERROR'?'neg':health==='HEALTHY'?'pos':'']
@@ -68,11 +69,13 @@ function renderSession(d){
 
   const startedAt=e.started_at?new Date(e.started_at).toLocaleString():'Not started';
   const lastCycle=e.last_cycle_at?new Date(e.last_cycle_at).toLocaleTimeString():'—';
+  const c=d.model_c||{};
   document.querySelector('#session-meta').innerHTML=`
     <span><b>Session</b> ${esc(e.session_id||'preview')}</span>
     <span><b>Started</b> ${esc(startedAt)}</span>
     <span><b>Split</b> ${esc(e.split||'50 / 50')}</span>
     <span><b>Exposure cap</b> ${money.format(exposureLimit)}</span>
+    <span><b>Model C</b> ${esc(c.execution_enabled?'LLM LIVE':c.configured?'LLM SHADOW':'LLM SETUP')}</span>
     <span><b>Last cycle</b> ${esc(lastCycle)}</span>
     <span><b>Market time</b> ${e.market_time?new Date(e.market_time).toLocaleTimeString():'—'}</span>
   `;
@@ -138,6 +141,12 @@ function positionBlock(open){
     </div>`).join('');
 }
 
+function roleClass(role){
+  if(role==='CONTROL')return 'control';
+  if(role==='ADAPTIVE')return 'adaptive';
+  return 'challenger';
+}
+
 function modelCard(m,d){
   const totalPnl=Number(m.realized_pl||0)+Number(m.unrealized_pl||0);
   const stats=m.stats||{};
@@ -145,7 +154,7 @@ function modelCard(m,d){
   return `
     <div class="model-head">
       <div class="model-title-wrap">
-        <span class="role-tag ${m.role==='CONTROL'?'control':'challenger'}">${esc(m.role)}</span>
+        <span class="role-tag ${roleClass(m.role)}">${esc(m.role)}</span>
         <div>
           <span class="model-kicker">MODEL ${esc(m.name)}</span>
           <h1>${esc(m.label)}</h1>
@@ -217,7 +226,7 @@ function tradesTable(rows){
 function tradeSummaryCard(m){
   const s=m.stats||{};
   return `<div class="performance-card">
-    <div class="performance-head"><span class="role-tag ${m.role==='CONTROL'?'control':'challenger'}">${esc(m.role)}</span><b>Model ${esc(m.name)}</b></div>
+    <div class="performance-head"><span class="role-tag ${roleClass(m.role)}">${esc(m.role)}</span><b>Model ${esc(m.name)}</b></div>
     <div class="performance-grid">
       <div><span>Realized</span><strong class="${m.realized_pl<0?'neg':m.realized_pl>0?'pos':''}">${money.format(m.realized_pl||0)}</strong></div>
       <div><span>Win rate</span><strong>${pct(s.win_rate_pct)}</strong></div>
@@ -244,7 +253,7 @@ async function refresh(){
       document.querySelectorAll('.model-panel[data-model]').forEach(el=>{
         el.innerHTML=modelCard(d.models[el.dataset.model],d);
       });
-    }else if(view==='A'||view==='B'){
+    }else if(view==='A'||view==='B'||view==='C'){
       document.querySelector('#compare-view').classList.add('hidden');
       document.querySelector('#single-view').classList.remove('hidden');
       document.querySelector('#single-model').innerHTML=modelCard(d.models[view],d);
@@ -254,8 +263,10 @@ async function refresh(){
       const all=d.trades||[];
       document.querySelector('#trades-a').innerHTML=tradesTable(all.filter(t=>t.model==='A'));
       document.querySelector('#trades-b').innerHTML=tradesTable(all.filter(t=>t.model==='B'));
+      document.querySelector('#trades-c').innerHTML=tradesTable(all.filter(t=>t.model==='C'));
       document.querySelector('#trade-total').textContent=`${all.length} orders today`;
-      document.querySelector('#trade-summary').innerHTML=tradeSummaryCard(d.models.A)+tradeSummaryCard(d.models.B);
+      document.querySelector('#trade-summary').innerHTML=
+        tradeSummaryCard(d.models.A)+tradeSummaryCard(d.models.B)+tradeSummaryCard(d.models.C);
     }
   }catch(e){
     const state=document.querySelector('#state');

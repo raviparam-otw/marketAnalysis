@@ -71,9 +71,28 @@ def test_daily_loss_limit_scales_with_capital():
     assert "Daily model loss" in result.reason
 
 
-def test_exit_rules_use_technical_stop():
+def test_exit_rules_use_technical_stop_and_early_profit_protection():
     risk = RiskManager(config(), capital=50_000)
     assert risk.exit_reason(100, 98, 100, 98) == "technical_stop"
     assert risk.exit_reason(100, 105, 105, 98) == "take_profit"
-    assert risk.exit_reason(100, 102.4, 104, 98) == "trailing_stop"
-    assert risk.exit_reason(100, 101, 101, 98) is None
+    assert risk.exit_reason(100, 100.05, 101.0, 98) == "profit_protection"
+    assert risk.exit_reason(100, 100.5, 102.0, 98) == "early_trailing_stop"
+    assert risk.exit_reason(100, 100.4, 100.4, 98) is None
+
+
+def test_model_b_has_aggressive_paper_profile():
+    risk = RiskManager(config(), model="B", capital=50_000)
+    assert risk.risk_budget == 500
+    assert risk.max_position_notional == 10_000
+    assert risk.daily_loss_limit == 2_500
+    assert risk.max_trades_per_day == 20
+    assert risk.max_consecutive_losses == 5
+    assert risk.max_open_positions == 5
+    assert risk.max_exposure == 45_000
+
+
+def test_model_room_caps_entry_notional():
+    risk = RiskManager(config(), model="B", capital=50_000)
+    result = risk.entry_check(10.0, 9.5, False, model_room=2_000)
+    assert result.allowed
+    assert result.notional == 2_000

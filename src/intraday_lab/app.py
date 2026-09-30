@@ -36,8 +36,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Alpaca Dual-Model Intraday Lab",
-    version="0.3.0",
+    title="Alpaca Three-Model Intraday Lab",
+    version="0.4.0",
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
@@ -68,7 +68,7 @@ async def dashboard(request: Request):
 @app.get("/model/{model}", response_class=HTMLResponse)
 async def model_page(request: Request, model: str):
     model = model.upper()
-    if model not in {"A", "B"}:
+    if model not in {"A", "B", "C"}:
         raise HTTPException(status_code=404, detail="Unknown model")
     return templates.TemplateResponse(
         request=request,

@@ -10,7 +10,8 @@ from .broker import PaperBroker
 from .config import Settings
 from .experiment import ExperimentSession, ExperimentSessionStore
 from .journal import TradeJournal
-from .models import Decision, PositionGuard
+from .model_c import ModelCAdvisor
+from .models import Decision, PositionGuard, Signal
 from .news import AlpacaNewsService
 from .risk import RiskManager
 from .strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
@@ -33,6 +34,7 @@ class ModelRuntime:
         self.unrealized_pl = 0.0
         self.peak_equity = 0.0
         self.last_scan_log_at: datetime | None = None
+        self.last_decision_at: datetime | None = None
 
     @property
     def capital(self) -> float:
@@ -66,7 +68,7 @@ class ModelRuntime:
 
 
 class TradingEngine:
-    """Paper-only dual-model experiment with frozen daily 50/50 virtual allocations."""
+    """Paper-only three-model experiment with frozen daily A/B/C virtual allocations."""
 
     def __init__(self, config: Settings, broker: PaperBroker) -> None:
         self.config = config
@@ -75,6 +77,11 @@ class TradingEngine:
         self.session_store = ExperimentSessionStore(config.trade_log_dir)
         self.session: ExperimentSession | None = self.session_store.load_today()
         self.news = AlpacaNewsService(config.api_key, config.secret_key)
+        self.model_c = ModelCAdvisor(
+            config.model_c_llm_base_url,
+            config.model_c_llm_model,
+            config.model_c_llm_api_key,
+        )
 
         self.models = {
             "A": ModelRuntime(
@@ -90,6 +97,13 @@ class TradingEngine:
                 "Momentum Catalyst",
                 MomentumCatalystStrategy(config),
                 RiskManager(config, "B"),
+            ),
+            "C": ModelRuntime(
+                "C",
+                "ADAPTIVE",
+                "LLM Multi-Agent",
+                self.model_c,
+                RiskManager(config, "C"),
             ),
         }
 
@@ -113,6 +127,11 @@ class TradingEngine:
     def _configure_allocations(self, session: ExperimentSession) -> None:
         for name, model in self.models.items():
             capital = float(session.allocations.get(name, 0.0))
+            # A legacy same-day A/B session can be opened for inspection without
+            # retroactively changing its allocation. Model C becomes active on the
+            # next newly-created A/B/C session.
+            if capital <= 0:
+                continue
             model.risk.configure_session_capital(capital)
             model.peak_equity = max(model.peak_equity, capital)
 
@@ -141,7 +160,7 @@ class TradingEngine:
         if positions and existing_session is None:
             symbols = ", ".join(sorted(str(position.symbol) for position in positions))
             raise RuntimeError(
-                "Cannot create a clean A/B session while pre-existing PAPER positions exist "
+                "Cannot create a clean A/B/C session while pre-existing PAPER positions exist "
                 f"({symbols}). Use Emergency Flatten first."
             )
 
@@ -187,7 +206,7 @@ class TradingEngine:
             ]
             if not candidates:
                 raise RuntimeError(
-                    f"Existing PAPER position {symbol} is not attributable to Model A/B. "
+                    f"Existing PAPER position {symbol} is not attributable to Model A/B/C. "
                     "Use Emergency Flatten before starting a clean experiment."
                 )
 
@@ -414,103 +433,317 @@ class TradingEngine:
 
         total_exposure = self._actual_exposure(positions)
         session_equity = self.session.starting_equity if self.session else account["equity"]
-        global_cap = session_equity * self.config.max_account_exposure_pct
+        effective_global_exposure_pct = (
+            max(self.config.max_account_exposure_pct, 0.80)
+            if self.config.action_day_mode
+            else self.config.max_account_exposure_pct
+        )
+        global_cap = session_equity * effective_global_exposure_pct
         global_room = max(0.0, global_cap - total_exposure)
         available_cash = max(0.0, float(account.get("cash", 0.0)))
 
         for model in self.models.values():
-            if model.guards:
+            if self.session and float(self.session.allocations.get(model.name, 0.0)) <= 0:
+                continue
+            if len(model.guards) >= model.risk.max_open_positions:
+                model.log(
+                    "RISK",
+                    "Open-position cap reached",
+                    open_positions=len(model.guards),
+                    cap=model.risk.max_open_positions,
+                )
                 continue
 
             candidates = []
-            for symbol in self.universe:
-                if symbol in locked:
-                    continue
-                catalyst = self.news.catalyst_for(symbol) if model.name == "B" else None
-                signal = model.strategy.evaluate(
-                    symbol,
-                    bars.get(symbol, self._empty_frame()),
-                    market_aligned,
-                    now,
-                    catalyst,
-                )
-                model.latest_signals[symbol] = signal.to_dict()
-                if signal.decision == Decision.BUY:
-                    candidates.append(signal)
+            rejection_counts: dict[str, int] = {}
 
-            if not candidates:
+            if model.name == "C":
+                candidates = await self._scan_model_c(
+                    model=model,
+                    bars=bars,
+                    market_aligned=market_aligned,
+                    now=now,
+                    locked=locked,
+                )
+            else:
+                for symbol in self.universe:
+                    if symbol in locked:
+                        continue
+                    catalyst = self.news.catalyst_for(symbol) if model.name == "B" else None
+                    signal = model.strategy.evaluate(
+                        symbol,
+                        bars.get(symbol, self._empty_frame()),
+                        market_aligned,
+                        now,
+                        catalyst,
+                    )
+                    payload = signal.to_dict()
+                    model.latest_signals[symbol] = payload
+                    for failed in payload.get("context", {}).get("failed_conditions", []):
+                        rejection_counts[failed] = rejection_counts.get(failed, 0) + 1
+                    if signal.decision == Decision.BUY:
+                        candidates.append(signal)
+
                 if (
                     model.last_scan_log_at is None
                     or now - model.last_scan_log_at >= timedelta(seconds=60)
                 ):
-                    model.log("SCAN", "No qualified entry", scanned=len(self.universe))
+                    model.log(
+                        "SCAN",
+                        "Scanner funnel",
+                        scanned=len(self.universe),
+                        qualified=len(candidates),
+                        rejected_by=rejection_counts if model.name == "B" else None,
+                        open_positions=len(model.guards),
+                        open_cap=model.risk.max_open_positions,
+                    )
                     model.last_scan_log_at = now
+
+            if not candidates:
                 continue
 
-            best = max(candidates, key=lambda item: item.score or item.relative_volume)
-            check = model.risk.entry_check(
-                best.price,
-                best.stop_price,
-                False,
-                now,
-                available_cash=available_cash,
-                global_room=global_room,
+            candidates.sort(key=lambda item: item.score or item.relative_volume, reverse=True)
+            entries_this_cycle = 0
+
+            for candidate in candidates:
+                if entries_this_cycle >= model.risk.max_entries_per_cycle:
+                    break
+                if len(model.guards) >= model.risk.max_open_positions:
+                    break
+                if candidate.symbol in locked:
+                    continue
+
+                model_exposure = sum(
+                    guard.quantity * (guard.current_price or guard.entry_price)
+                    for guard in model.guards.values()
+                )
+                model_room = max(0.0, model.risk.max_exposure - model_exposure)
+                check = model.risk.entry_check(
+                    candidate.price,
+                    candidate.stop_price,
+                    False,
+                    now,
+                    available_cash=available_cash,
+                    global_room=global_room,
+                    model_room=model_room,
+                )
+                if not check.allowed:
+                    model.log("RISK", "Entry rejected", reason=check.reason, symbol=candidate.symbol)
+                    continue
+
+                trade_id = f"{model.name}-{uuid4().hex[:12]}"
+                client_order_id = f"model-{model.name.lower()}-{trade_id.lower()}"
+                order = await asyncio.to_thread(
+                    self.broker.buy_qty,
+                    candidate.symbol,
+                    check.quantity,
+                    client_order_id,
+                )
+
+                profile = model.risk.profile
+                context = candidate.to_dict() | {
+                    "risk_dollars": round(check.dollars_at_risk, 2),
+                    "planned_notional": round(check.notional, 2),
+                    "session_allocation": round(model.capital, 2),
+                    "risk_per_trade_pct": float(profile["risk_per_trade_pct"]),
+                    "model_max_exposure": model.risk.max_exposure,
+                    "model_max_open_positions": model.risk.max_open_positions,
+                }
+                self.journal.record_order(
+                    order,
+                    model=model.name,
+                    side="BUY",
+                    symbol=candidate.symbol,
+                    reason=candidate.reason,
+                    trade_id=trade_id,
+                    session_id=self.session.session_id if self.session else None,
+                    requested_qty=check.quantity,
+                    signal_price=candidate.price,
+                    signal_context=context,
+                )
+
+                model.guards[candidate.symbol] = PositionGuard(
+                    model=model.name,
+                    symbol=candidate.symbol,
+                    trade_id=trade_id,
+                    entry_price=candidate.price,
+                    quantity=check.quantity,
+                    high_watermark=candidate.price,
+                    stop_price=candidate.stop_price,
+                    entered_at=now,
+                    current_price=candidate.price,
+                )
+                locked.add(candidate.symbol)
+                available_cash = max(0.0, available_cash - check.notional)
+                global_room = max(0.0, global_room - check.notional)
+                entries_this_cycle += 1
+                model.log(
+                    "TRADE",
+                    "Paper buy submitted",
+                    symbol=candidate.symbol,
+                    qty=round(check.quantity, 4),
+                    notional=round(check.notional, 2),
+                    risk=round(check.dollars_at_risk, 2),
+                    setup=candidate.setup,
+                    score=round(float(candidate.score or 0.0), 2),
+                    open_positions=len(model.guards),
+                )
+
+    async def _scan_model_c(
+        self,
+        *,
+        model: ModelRuntime,
+        bars: dict,
+        market_aligned: bool,
+        now: datetime,
+        locked: set[str],
+    ) -> list[Signal]:
+        if not self.config.model_c_enabled:
+            if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
+                model.log("SCAN", "Model C disabled by configuration")
+                model.last_scan_log_at = now
+            return []
+
+        if not self.model_c.configured:
+            if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
+                model.log(
+                    "WARN",
+                    "Model C waiting for LLM endpoint",
+                    required=["MODEL_C_LLM_BASE_URL", "MODEL_C_LLM_MODEL"],
+                )
+                model.last_scan_log_at = now
+            return []
+
+        if (
+            model.last_decision_at is not None
+            and now - model.last_decision_at
+            < timedelta(seconds=self.config.model_c_decision_interval_seconds)
+        ):
+            return []
+
+        catalysts = {
+            symbol: self.news.catalyst_for(symbol)
+            for symbol in self.universe
+            if symbol not in locked
+        }
+        shortlist = self.model_c.shortlist(
+            self.universe,
+            bars,
+            now=now,
+            catalysts=catalysts,
+            market_aligned=market_aligned,
+            locked=locked,
+            limit=self.config.model_c_shortlist_size,
+        )
+
+        for item in shortlist:
+            preview = Signal(
+                symbol=item["symbol"],
+                decision=Decision.HOLD,
+                price=float(item["price"]),
+                vwap=float(item["vwap"]),
+                opening_high=float(item["hod"]),
+                relative_volume=float(item["relative_volume"]),
+                market_aligned=market_aligned,
+                reason=f"LLM shortlist pre-score {float(item['pre_score']):.2f}",
+                timestamp=now,
+                setup="llm_shortlist",
+                gap_pct=float(item["gap_pct"]),
+                change_pct=float(item["change_pct"]),
+                stop_price=float(item["price"]) * 0.985,
+                catalyst=bool(item["catalyst"]),
+                catalyst_headline=item.get("catalyst_headline"),
+                score=float(item["pre_score"]),
+                context={"candidate": item},
             )
-            if not check.allowed:
-                model.log("RISK", "Entry rejected", reason=check.reason, symbol=best.symbol)
+            model.latest_signals[item["symbol"]] = preview.to_dict()
+
+        if not shortlist:
+            if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
+                model.log("SCAN", "Model C found no active shortlist", scanned=len(self.universe))
+                model.last_scan_log_at = now
+            model.last_decision_at = now
+            return []
+
+        benchmark_context = {}
+        for benchmark in ("SPY", "QQQ"):
+            frame = bars.get(benchmark)
+            if frame is None or frame.empty:
                 continue
-
-            trade_id = f"{model.name}-{uuid4().hex[:12]}"
-            client_order_id = f"model-{model.name.lower()}-{trade_id.lower()}"
-            order = await asyncio.to_thread(
-                self.broker.buy_qty,
-                best.symbol,
-                check.quantity,
-                client_order_id,
-            )
-
-            context = best.to_dict() | {
-                "risk_dollars": round(check.dollars_at_risk, 2),
-                "planned_notional": round(check.notional, 2),
-                "session_allocation": round(model.capital, 2),
-                "risk_per_trade_pct": self.config.risk_per_trade_pct,
+            current = float(frame.iloc[-1]["close"])
+            previous = float(frame.iloc[-2]["close"]) if len(frame) >= 2 else current
+            benchmark_context[benchmark] = {
+                "price": current,
+                "last_bar_change_pct": ((current / previous) - 1) * 100 if previous else 0.0,
             }
-            self.journal.record_order(
-                order,
-                model=model.name,
-                side="BUY",
-                symbol=best.symbol,
-                reason=best.reason,
-                trade_id=trade_id,
-                session_id=self.session.session_id if self.session else None,
-                requested_qty=check.quantity,
-                signal_price=best.price,
-                signal_context=context,
-            )
 
-            model.guards[best.symbol] = PositionGuard(
-                model=model.name,
-                symbol=best.symbol,
-                trade_id=trade_id,
-                entry_price=best.price,
-                quantity=check.quantity,
-                high_watermark=best.price,
-                stop_price=best.stop_price,
-                entered_at=now,
-                current_price=best.price,
+        market_context = {
+            "timestamp": now.isoformat(timespec="seconds"),
+            "market_aligned": market_aligned,
+            "benchmarks": benchmark_context,
+            "paper_only": True,
+            "long_only": True,
+            "open_model_c_positions": list(model.guards),
+            "remaining_model_exposure": round(
+                max(
+                    0.0,
+                    model.risk.max_exposure
+                    - sum(
+                        guard.quantity * (guard.current_price or guard.entry_price)
+                        for guard in model.guards.values()
+                    ),
+                ),
+                2,
+            ),
+        }
+
+        model.last_decision_at = now
+        try:
+            decision = await asyncio.to_thread(
+                self.model_c.decide,
+                shortlist,
+                market_context=market_context,
+                timeout_seconds=self.config.model_c_llm_timeout_seconds,
             )
-            locked.add(best.symbol)
-            available_cash = max(0.0, available_cash - check.notional)
-            global_room = max(0.0, global_room - check.notional)
+        except Exception as exc:
+            model.log("ERROR", "Model C LLM decision failed", error=str(exc))
+            return []
+
+        selected = self.model_c.signal_from_decision(
+            shortlist,
+            decision,
+            now=now,
+            market_aligned=market_aligned,
+            min_confidence=self.config.model_c_min_confidence,
+        )
+
+        decision_name = str(decision.get("decision", "HOLD")).upper()
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+        model.log(
+            "SCAN",
+            "Model C desk decision",
+            decision=decision_name,
+            symbol=decision.get("symbol"),
+            confidence=round(confidence, 4),
+            shortlist=[item["symbol"] for item in shortlist],
+            rationale=decision.get("rationale"),
+        )
+        model.last_scan_log_at = now
+
+        if selected is None:
+            return []
+
+        model.latest_signals[selected.symbol] = selected.to_dict()
+        if not self.config.model_c_execution_enabled:
             model.log(
-                "TRADE",
-                "Paper buy submitted",
-                symbol=best.symbol,
-                qty=round(check.quantity, 4),
-                notional=round(check.notional, 2),
-                risk=round(check.dollars_at_risk, 2),
-                setup=best.setup,
+                "CONTROL",
+                "Model C BUY kept in shadow mode",
+                symbol=selected.symbol,
+                confidence=round(confidence, 4),
             )
+            return []
+
+        return [selected]
 
     async def _manage_model_position(
         self,
@@ -530,6 +763,23 @@ class TradingEngine:
             guard.unrealized_pl = float(position.unrealized_pl)
             guard.high_watermark = max(guard.high_watermark, current)
 
+            # Rebase the stop once the broker provides the actual fill so slippage at entry
+            # cannot silently increase the intended dollar risk.
+            if not guard.fill_risk_rebased and guard.quantity > 0:
+                fill_budget_stop = entry - (model.risk.risk_budget / guard.quantity)
+                old_stop = guard.stop_price
+                guard.stop_price = max(guard.stop_price, fill_budget_stop)
+                guard.fill_risk_rebased = True
+                model.log(
+                    "RISK",
+                    "Stop rebased from actual fill",
+                    symbol=symbol,
+                    fill=round(entry, 4),
+                    old_stop=round(old_stop, 4),
+                    new_stop=round(guard.stop_price, 4),
+                    target_risk=round(model.risk.risk_budget, 2),
+                )
+
             if guard.exit_pending:
                 continue
 
@@ -538,6 +788,8 @@ class TradingEngine:
                 current,
                 guard.high_watermark,
                 guard.stop_price,
+                entered_at=guard.entered_at,
+                now=now,
             )
             if now.time() >= time(15, 50):
                 reason = "end_of_day"
@@ -676,8 +928,10 @@ class TradingEngine:
             session_state = self.session.state
         else:
             starting_equity = account_equity
-            preview = round(account_equity / 2.0, 2) if account_equity else 0.0
-            allocations = {"A": preview, "B": round(account_equity - preview, 2) if account_equity else 0.0}
+            preview_a = round(account_equity / 3.0, 2) if account_equity else 0.0
+            preview_b = round(account_equity / 3.0, 2) if account_equity else 0.0
+            preview_c = round(account_equity - preview_a - preview_b, 2) if account_equity else 0.0
+            allocations = {"A": preview_a, "B": preview_b, "C": preview_c}
             session_id = None
             started_at = None
             session_state = "READY"
@@ -728,14 +982,17 @@ class TradingEngine:
                 "stats": stats,
                 "risk": {
                     "risk_per_trade": model.risk.risk_budget if capital else 0.0,
-                    "risk_per_trade_pct": self.config.risk_per_trade_pct * 100,
+                    "risk_per_trade_pct": float(model.risk.profile["risk_per_trade_pct"]) * 100,
                     "max_position": model.risk.max_position_notional if capital else 0.0,
-                    "max_position_pct": self.config.max_position_pct * 100,
+                    "max_position_pct": float(model.risk.profile["max_position_pct"]) * 100,
+                    "max_exposure": model.risk.max_exposure if capital else 0.0,
+                    "max_exposure_pct": float(model.risk.profile["max_exposure_pct"]) * 100,
                     "daily_loss_limit": model.risk.daily_loss_limit if capital else 0.0,
-                    "daily_loss_pct": self.config.daily_loss_pct * 100,
+                    "daily_loss_pct": float(model.risk.profile["daily_loss_pct"]) * 100,
                     "remaining_daily_loss": model.risk.remaining_daily_loss if capital else 0.0,
-                    "max_trades": self.config.max_trades_per_day,
-                    "consecutive_loss_limit": self.config.max_consecutive_losses,
+                    "max_trades": model.risk.max_trades_per_day,
+                    "max_open_positions": model.risk.max_open_positions,
+                    "consecutive_loss_limit": model.risk.max_consecutive_losses,
                 },
                 "signals": list(model.latest_signals.values()),
                 "logs": list(model.logs),
@@ -761,9 +1018,15 @@ class TradingEngine:
                 "account_pnl": account_pnl,
                 "allocation_a": float(allocations.get("A", 0.0)),
                 "allocation_b": float(allocations.get("B", 0.0)),
-                "split": "50 / 50",
+                "allocation_c": float(allocations.get("C", 0.0)),
+                "split": "A/B/C equal thirds",
                 "global_exposure": total_exposure,
-                "global_exposure_limit": starting_equity * self.config.max_account_exposure_pct if starting_equity else 0.0,
+                "global_exposure_limit": starting_equity * (
+                    max(self.config.max_account_exposure_pct, 0.80)
+                    if self.config.action_day_mode
+                    else self.config.max_account_exposure_pct
+                ) if starting_equity else 0.0,
+                "action_day_mode": self.config.action_day_mode,
                 "entry_window_open": self._entry_session(now),
                 "market_time": now.isoformat(timespec="seconds"),
                 "last_cycle_at": self.last_cycle_at.isoformat(timespec="seconds") if self.last_cycle_at else None,
@@ -778,6 +1041,10 @@ class TradingEngine:
                 "can_flatten": True,
             },
             "models": models,
+            "model_c": self.model_c.status(
+                execution_enabled=self.config.model_c_execution_enabled
+                and self.config.model_c_enabled
+            ),
             "universe": {
                 "symbols": self.universe,
                 "stats": self.universe_stats,

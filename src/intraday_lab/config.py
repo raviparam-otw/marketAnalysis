@@ -33,6 +33,7 @@ class Settings:
     api_key: str = field(default_factory=lambda: os.getenv("ALPACA_API_KEY", ""))
     secret_key: str = field(default_factory=lambda: os.getenv("ALPACA_SECRET_KEY", ""))
     paper: bool = field(default_factory=lambda: _bool("ALPACA_PAPER", False))
+    action_day_mode: bool = field(default_factory=lambda: _bool("ACTION_DAY_MODE", True))
 
     # Historical/backtest baseline. The live A/B engine does NOT assume this balance.
     starting_balance: float = field(default_factory=lambda: _float("STARTING_BALANCE", 100_000))
@@ -44,9 +45,24 @@ class Settings:
     risk_per_trade_pct: float = field(default_factory=lambda: _float("RISK_PER_TRADE_PCT", 0.005))
     max_position_pct: float = field(default_factory=lambda: _float("MAX_POSITION_PCT", 0.25))
     daily_loss_pct: float = field(default_factory=lambda: _float("DAILY_LOSS_PCT", 0.02))
-    max_account_exposure_pct: float = field(default_factory=lambda: _float("MAX_ACCOUNT_EXPOSURE_PCT", 0.50))
+    # PAPER action-day profile: keep a global account cap, then enforce per-model caps below.
+    max_account_exposure_pct: float = field(default_factory=lambda: _float("MAX_ACCOUNT_EXPOSURE_PCT", 0.80))
     max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MAX_TRADES_PER_DAY", "6")))
     max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MAX_CONSECUTIVE_LOSSES", "2")))
+
+    # Model A remains the control, but can now deploy more than one position.
+    model_a_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_OPEN_POSITIONS", "3")))
+    model_a_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXPOSURE_PCT", 0.65))
+
+    # Model B is intentionally aggressive for PAPER experimentation.
+    model_b_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_B_RISK_PER_TRADE_PCT", 0.01))
+    model_b_max_position_pct: float = field(default_factory=lambda: _float("MODEL_B_MAX_POSITION_PCT", 0.20))
+    model_b_daily_loss_pct: float = field(default_factory=lambda: _float("MODEL_B_DAILY_LOSS_PCT", 0.05))
+    model_b_max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_TRADES_PER_DAY", "20")))
+    model_b_max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_CONSECUTIVE_LOSSES", "5")))
+    model_b_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_OPEN_POSITIONS", "5")))
+    model_b_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_B_MAX_EXPOSURE_PCT", 0.90))
+    model_b_max_entries_per_cycle: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_ENTRIES_PER_CYCLE", "3")))
 
     # Legacy absolute values remain available for the historical backtester/compatibility,
     # but the live engine derives its dollar limits from the percentages above.
@@ -61,13 +77,39 @@ class Settings:
     take_profit_pct: float = field(default_factory=lambda: _float("TAKE_PROFIT_PCT", 0.05))
     trail_trigger_pct: float = field(default_factory=lambda: _float("TRAIL_TRIGGER_PCT", 0.03))
     trail_distance_pct: float = field(default_factory=lambda: _float("TRAIL_DISTANCE_PCT", 0.015))
+    break_even_trigger_pct: float = field(default_factory=lambda: _float("BREAK_EVEN_TRIGGER_PCT", 0.0075))
+    break_even_lock_pct: float = field(default_factory=lambda: _float("BREAK_EVEN_LOCK_PCT", 0.001))
+    early_trail_trigger_pct: float = field(default_factory=lambda: _float("EARLY_TRAIL_TRIGGER_PCT", 0.01))
+    early_trail_distance_pct: float = field(default_factory=lambda: _float("EARLY_TRAIL_DISTANCE_PCT", 0.006))
+    stagnation_minutes: int = field(default_factory=lambda: int(os.getenv("STAGNATION_MINUTES", "45")))
+    stagnation_min_gain_pct: float = field(default_factory=lambda: _float("STAGNATION_MIN_GAIN_PCT", 0.005))
 
     relative_volume_min: float = field(default_factory=lambda: _float("RELATIVE_VOLUME_MIN", 1.5))
-    momentum_rvol_min: float = field(default_factory=lambda: _float("MOMENTUM_RVOL_MIN", 2.0))
-    momentum_gap_min_pct: float = field(default_factory=lambda: _float("MOMENTUM_GAP_MIN_PCT", 4.0))
-    momentum_change_min_pct: float = field(default_factory=lambda: _float("MOMENTUM_CHANGE_MIN_PCT", 5.0))
-    momentum_max_price: float = field(default_factory=lambda: _float("MOMENTUM_MAX_PRICE", 30.0))
-    momentum_require_news: bool = field(default_factory=lambda: _bool("MOMENTUM_REQUIRE_NEWS", True))
+    momentum_rvol_min: float = field(default_factory=lambda: _float("MOMENTUM_RVOL_MIN", 1.25))
+    momentum_gap_min_pct: float = field(default_factory=lambda: _float("MOMENTUM_GAP_MIN_PCT", 1.5))
+    momentum_change_min_pct: float = field(default_factory=lambda: _float("MOMENTUM_CHANGE_MIN_PCT", 2.0))
+    momentum_max_price: float = field(default_factory=lambda: _float("MOMENTUM_MAX_PRICE", 50.0))
+    momentum_require_news: bool = field(default_factory=lambda: _bool("MOMENTUM_REQUIRE_NEWS", False))
+    momentum_min_score: float = field(default_factory=lambda: _float("MOMENTUM_MIN_SCORE", 5.0))
+
+    # Model C - LLM adaptive / multi-agent desk. The endpoint can be Ollama, vLLM,
+    # Hugging Face router, or any OpenAI-compatible open-source model host.
+    model_c_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_ENABLED", True))
+    model_c_execution_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_EXECUTION_ENABLED", True))
+    model_c_llm_base_url: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_BASE_URL", ""))
+    model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", ""))
+    model_c_llm_api_key: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_API_KEY", ""))
+    model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "30")))
+    model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "60")))
+    model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "5")))
+    model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.68))
+    model_c_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_C_RISK_PER_TRADE_PCT", 0.0075))
+    model_c_max_position_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_POSITION_PCT", 0.25))
+    model_c_daily_loss_pct: float = field(default_factory=lambda: _float("MODEL_C_DAILY_LOSS_PCT", 0.03))
+    model_c_max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_TRADES_PER_DAY", "10")))
+    model_c_max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_CONSECUTIVE_LOSSES", "3")))
+    model_c_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_OPEN_POSITIONS", "3")))
+    model_c_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_EXPOSURE_PCT", 0.75))
 
     poll_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_SECONDS", "10")))
     trade_log_dir: str = field(default_factory=lambda: os.getenv("TRADE_LOG_DIR", str(ROOT / "trade-data")))
@@ -85,6 +127,41 @@ class Settings:
             "WATCHLIST", "SPY,QQQ,NVDA,TSLA,AMD,PLTR,AAPL,META,AMZN,MSFT"
         )
     )
+
+    def model_profile(self, model: str) -> dict:
+        model = model.upper()
+        if model == "B":
+            return {
+                "risk_per_trade_pct": self.model_b_risk_per_trade_pct,
+                "max_position_pct": self.model_b_max_position_pct,
+                "daily_loss_pct": self.model_b_daily_loss_pct,
+                "max_trades_per_day": self.model_b_max_trades_per_day,
+                "max_consecutive_losses": self.model_b_max_consecutive_losses,
+                "max_open_positions": self.model_b_max_open_positions,
+                "max_exposure_pct": self.model_b_max_exposure_pct,
+                "max_entries_per_cycle": self.model_b_max_entries_per_cycle,
+            }
+        if model == "C":
+            return {
+                "risk_per_trade_pct": self.model_c_risk_per_trade_pct,
+                "max_position_pct": self.model_c_max_position_pct,
+                "daily_loss_pct": self.model_c_daily_loss_pct,
+                "max_trades_per_day": self.model_c_max_trades_per_day,
+                "max_consecutive_losses": self.model_c_max_consecutive_losses,
+                "max_open_positions": self.model_c_max_open_positions,
+                "max_exposure_pct": self.model_c_max_exposure_pct,
+                "max_entries_per_cycle": 1,
+            }
+        return {
+            "risk_per_trade_pct": self.risk_per_trade_pct,
+            "max_position_pct": self.max_position_pct,
+            "daily_loss_pct": self.daily_loss_pct,
+            "max_trades_per_day": self.max_trades_per_day,
+            "max_consecutive_losses": self.max_consecutive_losses,
+            "max_open_positions": self.model_a_max_open_positions,
+            "max_exposure_pct": self.model_a_max_exposure_pct,
+            "max_entries_per_cycle": 2,
+        }
 
     def validate(self, require_credentials: bool = True) -> None:
         if not self.paper:
@@ -105,6 +182,24 @@ class Settings:
             raise ValueError("RISK_PER_TRADE_PCT must be below DAILY_LOSS_PCT.")
         if self.max_trades_per_day <= 0 or self.max_consecutive_losses <= 0:
             raise ValueError("Daily trade-count controls must be positive.")
+
+        for model in ("A", "B", "C"):
+            profile = self.model_profile(model)
+            for key in ("risk_per_trade_pct", "max_position_pct", "daily_loss_pct", "max_exposure_pct"):
+                if not (0 < float(profile[key]) <= 1):
+                    raise ValueError(f"{model} {key} must be greater than 0 and no more than 1.")
+            if profile["risk_per_trade_pct"] >= profile["daily_loss_pct"]:
+                raise ValueError(f"{model} risk per trade must be below its daily loss limit.")
+            for key in ("max_trades_per_day", "max_consecutive_losses", "max_open_positions", "max_entries_per_cycle"):
+                if int(profile[key]) <= 0:
+                    raise ValueError(f"{model} {key} must be positive.")
+
+        if self.model_c_decision_interval_seconds <= 0 or self.model_c_shortlist_size <= 0:
+            raise ValueError("Model C decision interval and shortlist size must be positive.")
+        if not (0 <= self.model_c_min_confidence <= 1):
+            raise ValueError("MODEL_C_MIN_CONFIDENCE must be between 0 and 1.")
+        if self.model_c_llm_timeout_seconds <= 0:
+            raise ValueError("MODEL_C_LLM_TIMEOUT_SECONDS must be positive.")
 
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")

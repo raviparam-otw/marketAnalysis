@@ -40,3 +40,20 @@ def test_realized_pl_uses_actual_fills(tmp_path):
     assert sell["realized_pl"] == -20.0
     assert payload["summary"]["realized_pl"] == -20.0
     assert payload["summary"]["models"]["A"]["realized_pl"] == -20.0
+
+
+def test_model_c_is_included_in_summary_and_open_trade_recovery(tmp_path):
+    journal = TradeJournal(tmp_path, now_fn=lambda: NOW)
+    journal.record_order(
+        order("c-buy", status="filled", filled_qty="10", filled_avg_price="20.00", filled_at=NOW),
+        model="C",
+        side="BUY",
+        symbol="LLM",
+        reason="llm_multi_agent",
+        trade_id="C-validation",
+        requested_qty=10,
+    )
+    status = journal.status()
+    assert "C" in status["summary"]["models"]
+    assert status["summary"]["models"]["C"]["orders"] == 1
+    assert journal.open_trades()[0]["model"] == "C"

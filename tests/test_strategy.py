@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 
 from intraday_lab.models import Decision
-from intraday_lab.strategy import OpeningRangeVwapStrategy
+from intraday_lab.config import Settings
+from intraday_lab.strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -35,3 +36,24 @@ def test_no_trade_without_market_alignment():
     )
     assert signal.decision == Decision.HOLD
     assert "market alignment" in signal.reason
+
+
+def test_model_b_action_day_can_qualify_without_news_when_momentum_score_is_strong():
+    index = pd.date_range("2026-09-25 09:30", periods=30, freq="min", tz=EASTERN)
+    close = np.linspace(10.0, 10.5, 30)
+    bars = pd.DataFrame(
+        {
+            "open": close - 0.03,
+            "high": close + 0.04,
+            "low": close - 0.05,
+            "close": close,
+            "volume": [100] * 25 + [400, 450, 500, 550, 900],
+        },
+        index=index,
+    )
+    cfg = Settings(api_key="x", secret_key="y", paper=True)
+    signal = MomentumCatalystStrategy(cfg).evaluate(
+        "FAST", bars, True, datetime(2026, 9, 25, 9, 59, tzinfo=EASTERN), None
+    )
+    assert signal.score >= cfg.momentum_min_score
+    assert signal.context["momentum_trigger"] is True

@@ -16,6 +16,7 @@ import pandas as pd
 from .config import Settings, settings
 from .experiment import ExperimentSessionStore
 from .journal import TradeJournal
+from .model_c import ModelCAdvisor
 from .models import Decision
 from .risk import RiskManager
 from .strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
@@ -93,6 +94,7 @@ def offline_checks() -> list[Check]:
         "strategy",
         "risk",
         "journal",
+        "model_c",
         "news",
         "broker",
         "engine",
@@ -116,20 +118,19 @@ def offline_checks() -> list[Check]:
             store = ExperimentSessionStore(directory)
             now = datetime(2026, 9, 28, 9, 20, tzinfo=EASTERN)
             session = store.create_or_load(83_421.17, now)
-            total = round(session.allocations["A"] + session.allocations["B"], 2)
-            passed = (
-                total == 83_421.17
-                and abs(session.allocations["A"] - session.allocations["B"]) <= 0.01
-            )
+            total = round(sum(session.allocations.values()), 2)
+            spread = max(session.allocations.values()) - min(session.allocations.values())
+            passed = total == 83_421.17 and round(spread, 2) <= 0.01 and set(session.allocations) == {"A", "B", "C"}
             checks.append(
                 Check(
-                    "dynamic-50-50-split",
+                    "dynamic-three-way-split",
                     passed,
-                    f"A={session.allocations['A']:.2f}, B={session.allocations['B']:.2f}",
+                    f"A={session.allocations['A']:.2f}, B={session.allocations['B']:.2f}, "
+                    f"C={session.allocations['C']:.2f}",
                 )
             )
     except Exception as exc:
-        checks.append(Check("dynamic-50-50-split", False, str(exc)))
+        checks.append(Check("dynamic-three-way-split", False, str(exc)))
 
     try:
         risk = RiskManager(_paper_config(), "B", capital=40_000)
@@ -141,8 +142,8 @@ def offline_checks() -> list[Check]:
         )
         passed = (
             decision.allowed
-            and round(decision.quantity, 6) == 400
-            and round(decision.dollars_at_risk, 2) == 200
+            and round(decision.quantity, 6) == 800
+            and round(decision.dollars_at_risk, 2) == 400
         )
         checks.append(
             Check(
@@ -187,13 +188,33 @@ def offline_checks() -> list[Check]:
                 "model-b-pipeline",
                 signal.price > 0
                 and signal.catalyst
-                and signal.setup == "momentum_pullback_hod",
+                and signal.setup == "momentum_action_day",
                 f"{signal.decision}: gap={signal.gap_pct:.2f}% "
                 f"change={signal.change_pct:.2f}% rvol={signal.relative_volume:.2f}",
             )
         )
     except Exception as exc:
         checks.append(Check("model-b-pipeline", False, str(exc)))
+
+    try:
+        advisor = ModelCAdvisor("", "")
+        candidate = advisor.build_candidate(
+            "TESTC",
+            _bars_for_model_b(),
+            now=datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN),
+            catalyst={"headline": "Validation catalyst"},
+            market_aligned=True,
+        )
+        checks.append(
+            Check(
+                "model-c-prefilter",
+                candidate is not None and candidate["pre_score"] > 0,
+                f"candidate={candidate['symbol'] if candidate else None} "
+                f"score={candidate['pre_score'] if candidate else 0}",
+            )
+        )
+    except Exception as exc:
+        checks.append(Check("model-c-prefilter", False, str(exc)))
 
     try:
         with tempfile.TemporaryDirectory() as directory:
@@ -277,7 +298,7 @@ def alpaca_checks() -> list[Check]:
                 f"status={account.get('status')}",
             )
         )
-        split = account["equity"] / 2
+        split = account["equity"] / 3
         checks.append(
             Check(
                 "alpaca-allocation-preview",
