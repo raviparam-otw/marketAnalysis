@@ -85,3 +85,14 @@ def test_kronos_prediction_summary():
     assert result["direction"] == "BULLISH"
     assert result["forecast_return_pct"] == 1.0
     assert result["pred_len"] == 2
+
+
+def test_kronos_device_is_configurable_without_loading_model():
+    forecaster = KronosForecaster(
+        repo_path=".models/Kronos",
+        model_name="NeoQuasar/Kronos-small",
+        tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
+        device="cpu",
+        enabled=False,
+    )
+    assert forecaster.device == "cpu"
