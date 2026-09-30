@@ -115,6 +115,7 @@ class Settings:
     )
     model_c_kronos_model: str = field(default_factory=lambda: os.getenv("MODEL_C_KRONOS_MODEL", "NeoQuasar/Kronos-small"))
     model_c_kronos_tokenizer: str = field(default_factory=lambda: os.getenv("MODEL_C_KRONOS_TOKENIZER", "NeoQuasar/Kronos-Tokenizer-base"))
+    model_c_kronos_device: str = field(default_factory=lambda: os.getenv("MODEL_C_KRONOS_DEVICE", "cpu"))
     model_c_kronos_lookback: int = field(default_factory=lambda: int(os.getenv("MODEL_C_KRONOS_LOOKBACK", "120")))
     model_c_kronos_pred_len: int = field(default_factory=lambda: int(os.getenv("MODEL_C_KRONOS_PRED_LEN", "5")))
     model_c_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_C_RISK_PER_TRADE_PCT", 0.0075))

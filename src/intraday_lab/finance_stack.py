@@ -110,6 +110,7 @@ class KronosForecaster:
         repo_path: str,
         model_name: str,
         tokenizer_name: str,
+        device: str = "cpu",
         lookback: int = 120,
         pred_len: int = 5,
         enabled: bool = True,
@@ -117,6 +118,7 @@ class KronosForecaster:
         self.repo_path = Path(repo_path)
         self.model_name = model_name
         self.tokenizer_name = tokenizer_name
+        self.device = device.strip().lower() or "cpu"
         self.lookback = lookback
         self.pred_len = pred_len
         self.enabled = enabled
@@ -156,7 +158,15 @@ class KronosForecaster:
 
         tokenizer = KronosTokenizer.from_pretrained(self.tokenizer_name)
         model = Kronos.from_pretrained(self.model_name)
-        self._predictor = KronosPredictor(model, tokenizer, max_context=512)
+        # Kronos' rotary-position cache can become split across CPU/MPS on Apple
+        # Silicon. CPU is the reliability-first default for this small model;
+        # Fin-R1 continues using MLX/Apple GPU independently.
+        self._predictor = KronosPredictor(
+            model,
+            tokenizer,
+            device=self.device,
+            max_context=512,
+        )
         return self._predictor
 
     @staticmethod
@@ -265,6 +275,7 @@ class FinanceIntelligenceStack:
             repo_path=config.model_c_kronos_repo_path,
             model_name=config.model_c_kronos_model,
             tokenizer_name=config.model_c_kronos_tokenizer,
+            device=config.model_c_kronos_device,
             lookback=config.model_c_kronos_lookback,
             pred_len=config.model_c_kronos_pred_len,
             enabled=config.model_c_kronos_enabled,
@@ -283,6 +294,7 @@ class FinanceIntelligenceStack:
                 "ready": bool(self.forecaster and getattr(self.forecaster, "ready", True)),
                 "model": getattr(self.forecaster, "model_name", None),
                 "tokenizer": getattr(self.forecaster, "tokenizer_name", None),
+                "device": getattr(self.forecaster, "device", None),
             },
         }
 

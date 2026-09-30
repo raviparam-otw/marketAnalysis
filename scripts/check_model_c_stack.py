@@ -81,7 +81,14 @@ def main() -> int:
     print("\n[PASS] FinBERT sentiment")
 
     if not kronos_ok:
+        errors = {
+            item.get("symbol"): item.get("kronos", {}).get("error")
+            for item in enriched
+            if item.get("kronos", {}).get("error")
+        }
         print("[FAIL] Kronos did not produce forecasts for the shortlist.")
+        print("Kronos device:", settings.model_c_kronos_device)
+        print("Kronos errors:", json.dumps(errors, indent=2))
         return 1
     print("[PASS] Kronos forecasts")
 

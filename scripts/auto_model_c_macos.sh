@@ -123,6 +123,7 @@ updates = {
     "MODEL_C_KRONOS_REPO_PATH": ".models/Kronos",
     "MODEL_C_KRONOS_MODEL": "NeoQuasar/Kronos-small",
     "MODEL_C_KRONOS_TOKENIZER": "NeoQuasar/Kronos-Tokenizer-base",
+    "MODEL_C_KRONOS_DEVICE": "cpu",
     "MODEL_C_KRONOS_LOOKBACK": "120",
     "MODEL_C_KRONOS_PRED_LEN": "5",
 }
