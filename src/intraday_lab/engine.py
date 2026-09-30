@@ -10,6 +10,7 @@ from .broker import PaperBroker
 from .config import Settings
 from .experiment import ExperimentSession, ExperimentSessionStore
 from .journal import TradeJournal
+from .model_c import ModelCAdvisor
 from .models import Decision, PositionGuard
 from .news import AlpacaNewsService
 from .risk import RiskManager
@@ -75,6 +76,11 @@ class TradingEngine:
         self.session_store = ExperimentSessionStore(config.trade_log_dir)
         self.session: ExperimentSession | None = self.session_store.load_today()
         self.news = AlpacaNewsService(config.api_key, config.secret_key)
+        self.model_c = ModelCAdvisor(
+            config.model_c_llm_base_url,
+            config.model_c_llm_model,
+            config.model_c_llm_api_key,
+        )
 
         self.models = {
             "A": ModelRuntime(
@@ -841,6 +847,7 @@ class TradingEngine:
                 "can_flatten": True,
             },
             "models": models,
+            "model_c": self.model_c.status(),
             "universe": {
                 "symbols": self.universe,
                 "stats": self.universe_stats,
