@@ -420,7 +420,12 @@ class TradingEngine:
 
         total_exposure = self._actual_exposure(positions)
         session_equity = self.session.starting_equity if self.session else account["equity"]
-        global_cap = session_equity * self.config.max_account_exposure_pct
+        effective_global_exposure_pct = (
+            max(self.config.max_account_exposure_pct, 0.80)
+            if self.config.action_day_mode
+            else self.config.max_account_exposure_pct
+        )
+        global_cap = session_equity * effective_global_exposure_pct
         global_room = max(0.0, global_cap - total_exposure)
         available_cash = max(0.0, float(account.get("cash", 0.0)))
 
@@ -832,7 +837,12 @@ class TradingEngine:
                 "allocation_b": float(allocations.get("B", 0.0)),
                 "split": "50 / 50",
                 "global_exposure": total_exposure,
-                "global_exposure_limit": starting_equity * self.config.max_account_exposure_pct if starting_equity else 0.0,
+                "global_exposure_limit": starting_equity * (
+                    max(self.config.max_account_exposure_pct, 0.80)
+                    if self.config.action_day_mode
+                    else self.config.max_account_exposure_pct
+                ) if starting_equity else 0.0,
+                "action_day_mode": self.config.action_day_mode,
                 "entry_window_open": self._entry_session(now),
                 "market_time": now.isoformat(timespec="seconds"),
                 "last_cycle_at": self.last_cycle_at.isoformat(timespec="seconds") if self.last_cycle_at else None,
