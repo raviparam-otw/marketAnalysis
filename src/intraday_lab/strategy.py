@@ -113,7 +113,7 @@ class MomentumCatalystStrategy:
             name for name in ("price range", "entry window")
             if not conditions[name]
         ]
-        if self.config.momentum_require_news and not conditions["catalyst"]:
+        if (not self.config.action_day_mode) and self.config.momentum_require_news and not conditions["catalyst"]:
             hard_failed.append("catalyst")
         momentum_trigger = (
             conditions["gap/change"]
