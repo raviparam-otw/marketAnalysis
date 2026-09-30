@@ -419,10 +419,17 @@ class TradingEngine:
         available_cash = max(0.0, float(account.get("cash", 0.0)))
 
         for model in self.models.values():
-            if model.guards:
+            if len(model.guards) >= model.risk.max_open_positions:
+                model.log(
+                    "RISK",
+                    "Open-position cap reached",
+                    open_positions=len(model.guards),
+                    cap=model.risk.max_open_positions,
+                )
                 continue
 
             candidates = []
+            rejection_counts: dict[str, int] = {}
             for symbol in self.universe:
                 if symbol in locked:
                     continue
@@ -434,83 +441,117 @@ class TradingEngine:
                     now,
                     catalyst,
                 )
-                model.latest_signals[symbol] = signal.to_dict()
+                payload = signal.to_dict()
+                model.latest_signals[symbol] = payload
+                for failed in payload.get("context", {}).get("failed_conditions", []):
+                    rejection_counts[failed] = rejection_counts.get(failed, 0) + 1
                 if signal.decision == Decision.BUY:
                     candidates.append(signal)
 
+            if (
+                model.last_scan_log_at is None
+                or now - model.last_scan_log_at >= timedelta(seconds=60)
+            ):
+                model.log(
+                    "SCAN",
+                    "Scanner funnel",
+                    scanned=len(self.universe),
+                    qualified=len(candidates),
+                    rejected_by=rejection_counts if model.name == "B" else None,
+                    open_positions=len(model.guards),
+                    open_cap=model.risk.max_open_positions,
+                )
+                model.last_scan_log_at = now
+
             if not candidates:
-                if (
-                    model.last_scan_log_at is None
-                    or now - model.last_scan_log_at >= timedelta(seconds=60)
-                ):
-                    model.log("SCAN", "No qualified entry", scanned=len(self.universe))
-                    model.last_scan_log_at = now
                 continue
 
-            best = max(candidates, key=lambda item: item.score or item.relative_volume)
-            check = model.risk.entry_check(
-                best.price,
-                best.stop_price,
-                False,
-                now,
-                available_cash=available_cash,
-                global_room=global_room,
-            )
-            if not check.allowed:
-                model.log("RISK", "Entry rejected", reason=check.reason, symbol=best.symbol)
-                continue
+            candidates.sort(key=lambda item: item.score or item.relative_volume, reverse=True)
+            entries_this_cycle = 0
 
-            trade_id = f"{model.name}-{uuid4().hex[:12]}"
-            client_order_id = f"model-{model.name.lower()}-{trade_id.lower()}"
-            order = await asyncio.to_thread(
-                self.broker.buy_qty,
-                best.symbol,
-                check.quantity,
-                client_order_id,
-            )
+            for candidate in candidates:
+                if entries_this_cycle >= model.risk.max_entries_per_cycle:
+                    break
+                if len(model.guards) >= model.risk.max_open_positions:
+                    break
+                if candidate.symbol in locked:
+                    continue
 
-            context = best.to_dict() | {
-                "risk_dollars": round(check.dollars_at_risk, 2),
-                "planned_notional": round(check.notional, 2),
-                "session_allocation": round(model.capital, 2),
-                "risk_per_trade_pct": self.config.risk_per_trade_pct,
-            }
-            self.journal.record_order(
-                order,
-                model=model.name,
-                side="BUY",
-                symbol=best.symbol,
-                reason=best.reason,
-                trade_id=trade_id,
-                session_id=self.session.session_id if self.session else None,
-                requested_qty=check.quantity,
-                signal_price=best.price,
-                signal_context=context,
-            )
+                model_exposure = sum(
+                    guard.quantity * (guard.current_price or guard.entry_price)
+                    for guard in model.guards.values()
+                )
+                model_room = max(0.0, model.risk.max_exposure - model_exposure)
+                check = model.risk.entry_check(
+                    candidate.price,
+                    candidate.stop_price,
+                    False,
+                    now,
+                    available_cash=available_cash,
+                    global_room=global_room,
+                    model_room=model_room,
+                )
+                if not check.allowed:
+                    model.log("RISK", "Entry rejected", reason=check.reason, symbol=candidate.symbol)
+                    continue
 
-            model.guards[best.symbol] = PositionGuard(
-                model=model.name,
-                symbol=best.symbol,
-                trade_id=trade_id,
-                entry_price=best.price,
-                quantity=check.quantity,
-                high_watermark=best.price,
-                stop_price=best.stop_price,
-                entered_at=now,
-                current_price=best.price,
-            )
-            locked.add(best.symbol)
-            available_cash = max(0.0, available_cash - check.notional)
-            global_room = max(0.0, global_room - check.notional)
-            model.log(
-                "TRADE",
-                "Paper buy submitted",
-                symbol=best.symbol,
-                qty=round(check.quantity, 4),
-                notional=round(check.notional, 2),
-                risk=round(check.dollars_at_risk, 2),
-                setup=best.setup,
-            )
+                trade_id = f"{model.name}-{uuid4().hex[:12]}"
+                client_order_id = f"model-{model.name.lower()}-{trade_id.lower()}"
+                order = await asyncio.to_thread(
+                    self.broker.buy_qty,
+                    candidate.symbol,
+                    check.quantity,
+                    client_order_id,
+                )
+
+                profile = model.risk.profile
+                context = candidate.to_dict() | {
+                    "risk_dollars": round(check.dollars_at_risk, 2),
+                    "planned_notional": round(check.notional, 2),
+                    "session_allocation": round(model.capital, 2),
+                    "risk_per_trade_pct": float(profile["risk_per_trade_pct"]),
+                    "model_max_exposure": model.risk.max_exposure,
+                    "model_max_open_positions": model.risk.max_open_positions,
+                }
+                self.journal.record_order(
+                    order,
+                    model=model.name,
+                    side="BUY",
+                    symbol=candidate.symbol,
+                    reason=candidate.reason,
+                    trade_id=trade_id,
+                    session_id=self.session.session_id if self.session else None,
+                    requested_qty=check.quantity,
+                    signal_price=candidate.price,
+                    signal_context=context,
+                )
+
+                model.guards[candidate.symbol] = PositionGuard(
+                    model=model.name,
+                    symbol=candidate.symbol,
+                    trade_id=trade_id,
+                    entry_price=candidate.price,
+                    quantity=check.quantity,
+                    high_watermark=candidate.price,
+                    stop_price=candidate.stop_price,
+                    entered_at=now,
+                    current_price=candidate.price,
+                )
+                locked.add(candidate.symbol)
+                available_cash = max(0.0, available_cash - check.notional)
+                global_room = max(0.0, global_room - check.notional)
+                entries_this_cycle += 1
+                model.log(
+                    "TRADE",
+                    "Paper buy submitted",
+                    symbol=candidate.symbol,
+                    qty=round(check.quantity, 4),
+                    notional=round(check.notional, 2),
+                    risk=round(check.dollars_at_risk, 2),
+                    setup=candidate.setup,
+                    score=round(float(candidate.score or 0.0), 2),
+                    open_positions=len(model.guards),
+                )
 
     async def _manage_model_position(
         self,
@@ -530,6 +571,23 @@ class TradingEngine:
             guard.unrealized_pl = float(position.unrealized_pl)
             guard.high_watermark = max(guard.high_watermark, current)
 
+            # Rebase the stop once the broker provides the actual fill so slippage at entry
+            # cannot silently increase the intended dollar risk.
+            if not guard.fill_risk_rebased and guard.quantity > 0:
+                fill_budget_stop = entry - (model.risk.risk_budget / guard.quantity)
+                old_stop = guard.stop_price
+                guard.stop_price = max(guard.stop_price, fill_budget_stop)
+                guard.fill_risk_rebased = True
+                model.log(
+                    "RISK",
+                    "Stop rebased from actual fill",
+                    symbol=symbol,
+                    fill=round(entry, 4),
+                    old_stop=round(old_stop, 4),
+                    new_stop=round(guard.stop_price, 4),
+                    target_risk=round(model.risk.risk_budget, 2),
+                )
+
             if guard.exit_pending:
                 continue
 
@@ -538,6 +596,8 @@ class TradingEngine:
                 current,
                 guard.high_watermark,
                 guard.stop_price,
+                entered_at=guard.entered_at,
+                now=now,
             )
             if now.time() >= time(15, 50):
                 reason = "end_of_day"
@@ -728,14 +788,17 @@ class TradingEngine:
                 "stats": stats,
                 "risk": {
                     "risk_per_trade": model.risk.risk_budget if capital else 0.0,
-                    "risk_per_trade_pct": self.config.risk_per_trade_pct * 100,
+                    "risk_per_trade_pct": float(model.risk.profile["risk_per_trade_pct"]) * 100,
                     "max_position": model.risk.max_position_notional if capital else 0.0,
-                    "max_position_pct": self.config.max_position_pct * 100,
+                    "max_position_pct": float(model.risk.profile["max_position_pct"]) * 100,
+                    "max_exposure": model.risk.max_exposure if capital else 0.0,
+                    "max_exposure_pct": float(model.risk.profile["max_exposure_pct"]) * 100,
                     "daily_loss_limit": model.risk.daily_loss_limit if capital else 0.0,
-                    "daily_loss_pct": self.config.daily_loss_pct * 100,
+                    "daily_loss_pct": float(model.risk.profile["daily_loss_pct"]) * 100,
                     "remaining_daily_loss": model.risk.remaining_daily_loss if capital else 0.0,
-                    "max_trades": self.config.max_trades_per_day,
-                    "consecutive_loss_limit": self.config.max_consecutive_losses,
+                    "max_trades": model.risk.max_trades_per_day,
+                    "max_open_positions": model.risk.max_open_positions,
+                    "consecutive_loss_limit": model.risk.max_consecutive_losses,
                 },
                 "signals": list(model.latest_signals.values()),
                 "logs": list(model.logs),
