@@ -96,3 +96,53 @@ def test_model_room_caps_entry_notional():
     result = risk.entry_check(10.0, 9.5, False, model_room=2_000)
     assert result.allowed
     assert result.notional == 2_000
+
+
+def test_model_a_cuts_weakness_before_wider_stop():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    eastern = ZoneInfo("America/New_York")
+    entered = datetime(2026, 9, 30, 10, 0, tzinfo=eastern)
+    risk = RiskManager(config(), model="A", capital=50_000)
+
+    # A quick -0.6% move is enough to cut a failed breakout even if the
+    # original technical stop is much lower.
+    assert (
+        risk.exit_reason(
+            100.0,
+            99.4,
+            100.1,
+            97.5,
+            entered_at=entered,
+            now=entered + timedelta(minutes=2),
+        )
+        == "model_a_weakness_exit"
+    )
+
+
+def test_model_a_exits_stalled_failed_breakout_after_five_minutes():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    eastern = ZoneInfo("America/New_York")
+    entered = datetime(2026, 9, 30, 10, 0, tzinfo=eastern)
+    risk = RiskManager(config(), model="A", capital=50_000)
+
+    assert (
+        risk.exit_reason(
+            100.0,
+            99.8,
+            100.2,
+            97.5,
+            entered_at=entered,
+            now=entered + timedelta(minutes=6),
+        )
+        == "model_a_failed_breakout"
+    )
+
+
+def test_model_a_still_supports_multiple_open_positions():
+    risk = RiskManager(config(), model="A", capital=50_000)
+    assert risk.max_open_positions == 3
+    assert risk.max_entries_per_cycle == 2
