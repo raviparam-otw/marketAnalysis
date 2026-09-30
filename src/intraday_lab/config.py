@@ -58,6 +58,10 @@ class Settings:
     model_a_failed_breakout_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_FAILED_BREAKOUT_MINUTES", "5")))
     model_a_failed_breakout_max_gain_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_MAX_GAIN_PCT", 0.003))
     model_a_failed_breakout_exit_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_EXIT_PCT", 0.002))
+    model_a_breakout_buffer_pct: float = field(default_factory=lambda: _float("MODEL_A_BREAKOUT_BUFFER_PCT", 0.0015))
+    model_a_confirmation_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_CONFIRMATION_BARS", "2")))
+    model_a_max_extension_from_or_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_OR_PCT", 0.06))
+    model_a_max_extension_from_vwap_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT", 0.04))
 
     # Model B is intentionally aggressive for PAPER experimentation.
     model_b_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_B_RISK_PER_TRADE_PCT", 0.01))
@@ -231,6 +235,14 @@ class Settings:
             raise ValueError("MODEL_A_FAILED_BREAKOUT_MAX_GAIN_PCT must be between 0 and 1.")
         if not (0 < self.model_a_failed_breakout_exit_pct < 1):
             raise ValueError("MODEL_A_FAILED_BREAKOUT_EXIT_PCT must be between 0 and 1.")
+        if not (0 <= self.model_a_breakout_buffer_pct < 0.05):
+            raise ValueError("MODEL_A_BREAKOUT_BUFFER_PCT must be between 0 and 0.05.")
+        if self.model_a_confirmation_bars not in (1, 2, 3):
+            raise ValueError("MODEL_A_CONFIRMATION_BARS must be 1, 2, or 3.")
+        if not (0 < self.model_a_max_extension_from_or_pct < 1):
+            raise ValueError("MODEL_A_MAX_EXTENSION_FROM_OR_PCT must be between 0 and 1.")
+        if not (0 < self.model_a_max_extension_from_vwap_pct < 1):
+            raise ValueError("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT must be between 0 and 1.")
 
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")
