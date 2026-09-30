@@ -9,6 +9,7 @@ from uuid import uuid4
 from .broker import PaperBroker
 from .config import Settings
 from .experiment import ExperimentSession, ExperimentSessionStore
+from .finance_stack import FinanceIntelligenceStack
 from .journal import TradeJournal
 from .model_c import ModelCAdvisor
 from .models import Decision, PositionGuard, Signal
@@ -77,10 +78,12 @@ class TradingEngine:
         self.session_store = ExperimentSessionStore(config.trade_log_dir)
         self.session: ExperimentSession | None = self.session_store.load_today()
         self.news = AlpacaNewsService(config.api_key, config.secret_key)
+        self.model_c_intelligence = FinanceIntelligenceStack.from_settings(config)
         self.model_c = ModelCAdvisor(
             config.model_c_llm_base_url,
             config.model_c_llm_model,
             config.model_c_llm_api_key,
+            intelligence=self.model_c_intelligence,
         )
 
         self.models = {
@@ -101,7 +104,7 @@ class TradingEngine:
             "C": ModelRuntime(
                 "C",
                 "ADAPTIVE",
-                "LLM Multi-Agent",
+                "Fin-R1 + Kronos + FinBERT",
                 self.model_c,
                 RiskManager(config, "C"),
             ),
