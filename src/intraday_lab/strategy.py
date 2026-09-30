@@ -87,8 +87,13 @@ class MomentumCatalystStrategy:
         continuation = price > recent_high and float(last["close"]) > float(last["open"])
         controlled_pullback = pullback_low > vwap * 0.985
         catalyst_ok = bool(catalyst) or not self.config.momentum_require_news
+        effective_max_price = (
+            max(self.config.momentum_max_price, 100.0)
+            if self.config.action_day_mode
+            else self.config.momentum_max_price
+        )
         conditions = {
-            "price range": self.config.min_price <= price <= self.config.momentum_max_price,
+            "price range": self.config.min_price <= price <= effective_max_price,
             "gap/change": gap_pct >= self.config.momentum_gap_min_pct or change_pct >= self.config.momentum_change_min_pct,
             "relative volume": rvol >= self.config.momentum_rvol_min,
             "catalyst": catalyst_ok,
