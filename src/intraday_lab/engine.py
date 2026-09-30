@@ -11,7 +11,7 @@ from .config import Settings
 from .experiment import ExperimentSession, ExperimentSessionStore
 from .journal import TradeJournal
 from .model_c import ModelCAdvisor
-from .models import Decision, PositionGuard
+from .models import Decision, PositionGuard, Signal
 from .news import AlpacaNewsService
 from .risk import RiskManager
 from .strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
@@ -34,6 +34,7 @@ class ModelRuntime:
         self.unrealized_pl = 0.0
         self.peak_equity = 0.0
         self.last_scan_log_at: datetime | None = None
+        self.last_decision_at: datetime | None = None
 
     @property
     def capital(self) -> float:
@@ -67,7 +68,7 @@ class ModelRuntime:
 
 
 class TradingEngine:
-    """Paper-only dual-model experiment with frozen daily 50/50 virtual allocations."""
+    """Paper-only three-model experiment with frozen daily A/B/C virtual allocations."""
 
     def __init__(self, config: Settings, broker: PaperBroker) -> None:
         self.config = config
@@ -97,6 +98,13 @@ class TradingEngine:
                 MomentumCatalystStrategy(config),
                 RiskManager(config, "B"),
             ),
+            "C": ModelRuntime(
+                "C",
+                "ADAPTIVE",
+                "LLM Multi-Agent",
+                self.model_c,
+                RiskManager(config, "C"),
+            ),
         }
 
         self.running = False
@@ -119,6 +127,11 @@ class TradingEngine:
     def _configure_allocations(self, session: ExperimentSession) -> None:
         for name, model in self.models.items():
             capital = float(session.allocations.get(name, 0.0))
+            # A legacy same-day A/B session can be opened for inspection without
+            # retroactively changing its allocation. Model C becomes active on the
+            # next newly-created A/B/C session.
+            if capital <= 0:
+                continue
             model.risk.configure_session_capital(capital)
             model.peak_equity = max(model.peak_equity, capital)
 
@@ -147,7 +160,7 @@ class TradingEngine:
         if positions and existing_session is None:
             symbols = ", ".join(sorted(str(position.symbol) for position in positions))
             raise RuntimeError(
-                "Cannot create a clean A/B session while pre-existing PAPER positions exist "
+                "Cannot create a clean A/B/C session while pre-existing PAPER positions exist "
                 f"({symbols}). Use Emergency Flatten first."
             )
 
@@ -193,7 +206,7 @@ class TradingEngine:
             ]
             if not candidates:
                 raise RuntimeError(
-                    f"Existing PAPER position {symbol} is not attributable to Model A/B. "
+                    f"Existing PAPER position {symbol} is not attributable to Model A/B/C. "
                     "Use Emergency Flatten before starting a clean experiment."
                 )
 
