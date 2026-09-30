@@ -28,6 +28,12 @@ async def lifespan(_: FastAPI):
         engine = TradingEngine(settings, PaperBroker(settings))
         engine.last_account = engine.broker.account_snapshot()
         engine.last_positions = engine.broker.positions()
+        open_orders = engine.broker.open_orders()
+        engine.upgrade_legacy_session_if_flat(
+            account=engine.last_account,
+            positions=engine.last_positions,
+            open_orders=open_orders,
+        )
     except Exception as exc:
         startup_error = str(exc)
     yield
