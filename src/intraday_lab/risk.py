@@ -46,16 +46,40 @@ class RiskManager:
         return float(self.config.model_capital or (self.config.starting_balance / 2.0))
 
     @property
+    def profile(self) -> dict:
+        return self.config.model_profile(self.model)
+
+    @property
     def risk_budget(self) -> float:
-        return round(self.capital * self.config.risk_per_trade_pct, 2)
+        return round(self.capital * float(self.profile["risk_per_trade_pct"]), 2)
 
     @property
     def max_position_notional(self) -> float:
-        return round(self.capital * self.config.max_position_pct, 2)
+        return round(self.capital * float(self.profile["max_position_pct"]), 2)
 
     @property
     def daily_loss_limit(self) -> float:
-        return round(self.capital * self.config.daily_loss_pct, 2)
+        return round(self.capital * float(self.profile["daily_loss_pct"]), 2)
+
+    @property
+    def max_trades_per_day(self) -> int:
+        return int(self.profile["max_trades_per_day"])
+
+    @property
+    def max_consecutive_losses(self) -> int:
+        return int(self.profile["max_consecutive_losses"])
+
+    @property
+    def max_open_positions(self) -> int:
+        return int(self.profile["max_open_positions"])
+
+    @property
+    def max_exposure(self) -> float:
+        return round(self.capital * float(self.profile["max_exposure_pct"]), 2)
+
+    @property
+    def max_entries_per_cycle(self) -> int:
+        return int(self.profile["max_entries_per_cycle"])
 
     @property
     def model_equity(self) -> float:
@@ -101,13 +125,14 @@ class RiskManager:
         *,
         available_cash: float | None = None,
         global_room: float | None = None,
+        model_room: float | None = None,
     ) -> RiskDecision:
         self.reset_session_if_needed(now)
         if has_position:
             return RiskDecision(False, "Model already has an open position")
-        if self.trades_today >= self.config.max_trades_per_day:
+        if self.trades_today >= self.max_trades_per_day:
             return RiskDecision(False, "Maximum trades per day reached")
-        if self.consecutive_losses >= self.config.max_consecutive_losses:
+        if self.consecutive_losses >= self.max_consecutive_losses:
             return RiskDecision(False, "Consecutive-loss limit reached")
         if self.realized_pl <= -self.daily_loss_limit:
             return RiskDecision(False, "Daily model loss limit reached")
@@ -122,6 +147,8 @@ class RiskManager:
             notional_room = min(notional_room, max(0.0, float(available_cash)))
         if global_room is not None:
             notional_room = min(notional_room, max(0.0, float(global_room)))
+        if model_room is not None:
+            notional_room = min(notional_room, max(0.0, float(model_room)))
         by_notional = notional_room / entry_price
 
         qty = max(0.0, min(by_risk, by_notional))
@@ -149,14 +176,47 @@ class RiskManager:
                 self.wins_today += 1
             self.consecutive_losses = 0
 
-    def exit_reason(self, entry: float, current: float, high: float, stop_price: float) -> str | None:
+    def exit_reason(
+        self,
+        entry: float,
+        current: float,
+        high: float,
+        stop_price: float,
+        *,
+        entered_at: datetime | None = None,
+        now: datetime | None = None,
+    ) -> str | None:
         if current <= stop_price:
             return "technical_stop"
+
         pnl_pct = (current - entry) / entry
+        high_pct = (high - entry) / entry
         if pnl_pct >= self.config.take_profit_pct:
             return "take_profit"
-        if (high - entry) / entry >= self.config.trail_trigger_pct:
+
+        # Protect a trade that has already proved itself instead of allowing a full round-trip.
+        if high_pct >= self.config.break_even_trigger_pct:
+            protected = entry * (1 + self.config.break_even_lock_pct)
+            if current <= protected:
+                return "profit_protection"
+
+        # Start trailing much earlier than the old +3% trigger. This is intentionally
+        # responsive for intraday PAPER testing, while the original wider trail remains
+        # available after a stronger move.
+        if high_pct >= self.config.early_trail_trigger_pct:
+            trailing = high * (1 - self.config.early_trail_distance_pct)
+            if current <= trailing:
+                return "early_trailing_stop"
+
+        if high_pct >= self.config.trail_trigger_pct:
             trailing = high * (1 - self.config.trail_distance_pct)
             if current <= trailing:
                 return "trailing_stop"
+
+        if entered_at is not None:
+            current_time = now or datetime.now(EASTERN)
+            elapsed_minutes = (current_time - entered_at).total_seconds() / 60
+            if elapsed_minutes >= self.config.stagnation_minutes and high_pct < self.config.stagnation_min_gain_pct:
+                return "stagnation_exit"
+
         return None
