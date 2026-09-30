@@ -443,6 +443,8 @@ class TradingEngine:
         available_cash = max(0.0, float(account.get("cash", 0.0)))
 
         for model in self.models.values():
+            if self.session and float(self.session.allocations.get(model.name, 0.0)) <= 0:
+                continue
             if len(model.guards) >= model.risk.max_open_positions:
                 model.log(
                     "RISK",
@@ -454,38 +456,48 @@ class TradingEngine:
 
             candidates = []
             rejection_counts: dict[str, int] = {}
-            for symbol in self.universe:
-                if symbol in locked:
-                    continue
-                catalyst = self.news.catalyst_for(symbol) if model.name == "B" else None
-                signal = model.strategy.evaluate(
-                    symbol,
-                    bars.get(symbol, self._empty_frame()),
-                    market_aligned,
-                    now,
-                    catalyst,
-                )
-                payload = signal.to_dict()
-                model.latest_signals[symbol] = payload
-                for failed in payload.get("context", {}).get("failed_conditions", []):
-                    rejection_counts[failed] = rejection_counts.get(failed, 0) + 1
-                if signal.decision == Decision.BUY:
-                    candidates.append(signal)
 
-            if (
-                model.last_scan_log_at is None
-                or now - model.last_scan_log_at >= timedelta(seconds=60)
-            ):
-                model.log(
-                    "SCAN",
-                    "Scanner funnel",
-                    scanned=len(self.universe),
-                    qualified=len(candidates),
-                    rejected_by=rejection_counts if model.name == "B" else None,
-                    open_positions=len(model.guards),
-                    open_cap=model.risk.max_open_positions,
+            if model.name == "C":
+                candidates = await self._scan_model_c(
+                    model=model,
+                    bars=bars,
+                    market_aligned=market_aligned,
+                    now=now,
+                    locked=locked,
                 )
-                model.last_scan_log_at = now
+            else:
+                for symbol in self.universe:
+                    if symbol in locked:
+                        continue
+                    catalyst = self.news.catalyst_for(symbol) if model.name == "B" else None
+                    signal = model.strategy.evaluate(
+                        symbol,
+                        bars.get(symbol, self._empty_frame()),
+                        market_aligned,
+                        now,
+                        catalyst,
+                    )
+                    payload = signal.to_dict()
+                    model.latest_signals[symbol] = payload
+                    for failed in payload.get("context", {}).get("failed_conditions", []):
+                        rejection_counts[failed] = rejection_counts.get(failed, 0) + 1
+                    if signal.decision == Decision.BUY:
+                        candidates.append(signal)
+
+                if (
+                    model.last_scan_log_at is None
+                    or now - model.last_scan_log_at >= timedelta(seconds=60)
+                ):
+                    model.log(
+                        "SCAN",
+                        "Scanner funnel",
+                        scanned=len(self.universe),
+                        qualified=len(candidates),
+                        rejected_by=rejection_counts if model.name == "B" else None,
+                        open_positions=len(model.guards),
+                        open_cap=model.risk.max_open_positions,
+                    )
+                    model.last_scan_log_at = now
 
             if not candidates:
                 continue
