@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from intraday_lab.model_c import ModelCAdvisor
+from intraday_lab.model_c import ModelCAdvisor, _clean_json_text
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -94,3 +94,10 @@ def test_invalid_symbol_is_never_executed():
         market_aligned=True,
         min_confidence=0.68,
     ) is None
+
+
+def test_fin_r1_think_answer_wrapper_json_is_extracted():
+    raw = '<think>financial reasoning here</think><answer>{"decision":"HOLD","confidence":0.73}</answer>'
+    parsed = __import__("json").loads(_clean_json_text(raw))
+    assert parsed["decision"] == "HOLD"
+    assert parsed["confidence"] == 0.73
