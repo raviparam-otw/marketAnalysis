@@ -92,10 +92,24 @@ class Settings:
     momentum_require_news: bool = field(default_factory=lambda: _bool("MOMENTUM_REQUIRE_NEWS", False))
     momentum_min_score: float = field(default_factory=lambda: _float("MOMENTUM_MIN_SCORE", 5.0))
 
-    # Model C scaffold: open-source LLM endpoint can be wired without changing trading logic.
+    # Model C - LLM adaptive / multi-agent desk. The endpoint can be Ollama, vLLM,
+    # Hugging Face router, or any OpenAI-compatible open-source model host.
+    model_c_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_ENABLED", True))
+    model_c_execution_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_EXECUTION_ENABLED", True))
     model_c_llm_base_url: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_BASE_URL", ""))
     model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", ""))
     model_c_llm_api_key: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_API_KEY", ""))
+    model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "30")))
+    model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "60")))
+    model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "5")))
+    model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.68))
+    model_c_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_C_RISK_PER_TRADE_PCT", 0.0075))
+    model_c_max_position_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_POSITION_PCT", 0.25))
+    model_c_daily_loss_pct: float = field(default_factory=lambda: _float("MODEL_C_DAILY_LOSS_PCT", 0.03))
+    model_c_max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_TRADES_PER_DAY", "10")))
+    model_c_max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_CONSECUTIVE_LOSSES", "3")))
+    model_c_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_OPEN_POSITIONS", "3")))
+    model_c_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_EXPOSURE_PCT", 0.75))
 
     poll_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_SECONDS", "10")))
     trade_log_dir: str = field(default_factory=lambda: os.getenv("TRADE_LOG_DIR", str(ROOT / "trade-data")))
@@ -126,6 +140,17 @@ class Settings:
                 "max_open_positions": self.model_b_max_open_positions,
                 "max_exposure_pct": self.model_b_max_exposure_pct,
                 "max_entries_per_cycle": self.model_b_max_entries_per_cycle,
+            }
+        if model == "C":
+            return {
+                "risk_per_trade_pct": self.model_c_risk_per_trade_pct,
+                "max_position_pct": self.model_c_max_position_pct,
+                "daily_loss_pct": self.model_c_daily_loss_pct,
+                "max_trades_per_day": self.model_c_max_trades_per_day,
+                "max_consecutive_losses": self.model_c_max_consecutive_losses,
+                "max_open_positions": self.model_c_max_open_positions,
+                "max_exposure_pct": self.model_c_max_exposure_pct,
+                "max_entries_per_cycle": 1,
             }
         return {
             "risk_per_trade_pct": self.risk_per_trade_pct,
@@ -158,7 +183,7 @@ class Settings:
         if self.max_trades_per_day <= 0 or self.max_consecutive_losses <= 0:
             raise ValueError("Daily trade-count controls must be positive.")
 
-        for model in ("A", "B"):
+        for model in ("A", "B", "C"):
             profile = self.model_profile(model)
             for key in ("risk_per_trade_pct", "max_position_pct", "daily_loss_pct", "max_exposure_pct"):
                 if not (0 < float(profile[key]) <= 1):
@@ -168,6 +193,13 @@ class Settings:
             for key in ("max_trades_per_day", "max_consecutive_losses", "max_open_positions", "max_entries_per_cycle"):
                 if int(profile[key]) <= 0:
                     raise ValueError(f"{model} {key} must be positive.")
+
+        if self.model_c_decision_interval_seconds <= 0 or self.model_c_shortlist_size <= 0:
+            raise ValueError("Model C decision interval and shortlist size must be positive.")
+        if not (0 <= self.model_c_min_confidence <= 1):
+            raise ValueError("MODEL_C_MIN_CONFIDENCE must be between 0 and 1.")
+        if self.model_c_llm_timeout_seconds <= 0:
+            raise ValueError("MODEL_C_LLM_TIMEOUT_SECONDS must be positive.")
 
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")
