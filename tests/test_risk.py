@@ -146,3 +146,17 @@ def test_model_a_still_supports_multiple_open_positions():
     risk = RiskManager(config(), model="A", capital=50_000)
     assert risk.max_open_positions == 3
     assert risk.max_entries_per_cycle == 2
+
+
+def test_strong_move_uses_wider_trailing_regime():
+    risk = RiskManager(config(), capital=50_000)
+    # At +5% high watermark, the main 1.5% trail replaces the earlier 0.6% trail.
+    assert risk.exit_reason(100, 104.0, 105.0, 98.0) is None
+    assert risk.exit_reason(100, 103.4, 105.0, 98.0) == "trailing_stop"
+
+
+def test_breakeven_does_not_reset_loss_streak():
+    risk = RiskManager(config(max_consecutive_losses=2), capital=50_000)
+    risk.record_closed_trade(-100)
+    risk.record_closed_trade(0)
+    assert risk.consecutive_losses == 1
