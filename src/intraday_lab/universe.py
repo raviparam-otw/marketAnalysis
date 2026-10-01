@@ -43,6 +43,11 @@ def snapshot_candidate(symbol:str,snapshot:object,min_price:float,min_dollar_vol
 
 
 def rank_candidates(candidates:list[UniverseCandidate],limit:int)->list[str]:
-    # Favor active movers but retain liquidity as a tie-breaker.
-    ranked=sorted(candidates,key=lambda x:(max(abs(x.change_pct),abs(x.gap_pct)),x.dollar_volume),reverse=True)
+    # All live models are currently long-only. Rank bullish movers ahead of
+    # decliners so a finite universe is not consumed by large downside moves.
+    def score(candidate: UniverseCandidate):
+        bullish_move=max(candidate.change_pct,candidate.gap_pct)
+        return (bullish_move>0,bullish_move,candidate.dollar_volume)
+
+    ranked=sorted(candidates,key=score,reverse=True)
     return [c.symbol for c in ranked[:limit]]
