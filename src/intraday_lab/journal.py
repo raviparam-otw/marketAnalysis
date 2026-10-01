@@ -80,8 +80,9 @@ class TradeJournal:
         for pnl in reversed(pnls):
             if pnl < 0:
                 consecutive_losses += 1
-            else:
+            elif pnl > 0:
                 break
+            # Breakeven does not reset a losing streak.
 
         return {
             "orders": len(rows),
