@@ -171,10 +171,10 @@ class RiskManager:
         if realized_pl < 0:
             self.losses_today += 1
             self.consecutive_losses += 1
-        else:
-            if realized_pl > 0:
-                self.wins_today += 1
+        elif realized_pl > 0:
+            self.wins_today += 1
             self.consecutive_losses = 0
+        # A breakeven trade does not erase an existing losing streak.
 
     def exit_reason(
         self,
@@ -223,18 +223,17 @@ class RiskManager:
             if current <= protected:
                 return "profit_protection"
 
-        # Start trailing much earlier than the old +3% trigger. This is intentionally
-        # responsive for intraday PAPER testing, while the original wider trail remains
-        # available after a stronger move.
-        if high_pct >= self.config.early_trail_trigger_pct:
-            trailing = high * (1 - self.config.early_trail_distance_pct)
-            if current <= trailing:
-                return "early_trailing_stop"
-
+        # Use the wider trailing regime once a stronger move reaches the main
+        # trigger. The early trail applies only before that point; otherwise the
+        # tighter early trail would make the wider trail unreachable.
         if high_pct >= self.config.trail_trigger_pct:
             trailing = high * (1 - self.config.trail_distance_pct)
             if current <= trailing:
                 return "trailing_stop"
+        elif high_pct >= self.config.early_trail_trigger_pct:
+            trailing = high * (1 - self.config.early_trail_distance_pct)
+            if current <= trailing:
+                return "early_trailing_stop"
 
         if entered_at is not None:
             current_time = now or datetime.now(EASTERN)
