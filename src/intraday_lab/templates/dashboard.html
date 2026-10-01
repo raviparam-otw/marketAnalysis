@@ -17,7 +17,6 @@
     <nav>
       <a href="/" class="nav-link {% if view == 'compare' %}active{% endif %}">Home</a>
       <a href="/model/A" class="nav-link {% if view == 'A' %}active{% endif %}">Model A</a>
-      <a href="/model/B" class="nav-link {% if view == 'B' %}active{% endif %}">Model B</a>
       <a href="/model/C" class="nav-link {% if view == 'C' %}active{% endif %}">Model C</a>
       <a href="/trades" class="nav-link {% if view == 'trades' %}active{% endif %}">Trades</a>
     </nav>
@@ -44,7 +43,6 @@
   <main class="workspace">
     <section id="compare-view" class="compare-grid">
       <article class="model-panel" data-model="A"></article>
-      <article class="model-panel" data-model="B"></article>
       <article class="model-panel" data-model="C"></article>
     </section>
 
@@ -66,10 +64,6 @@
         <article class="trade-panel">
           <div class="trade-panel-head"><span class="role-tag control">CONTROL</span><h2>Model A · Opening Range / VWAP</h2></div>
           <div id="trades-a"></div>
-        </article>
-        <article class="trade-panel">
-          <div class="trade-panel-head"><span class="role-tag challenger">CHALLENGER</span><h2>Model B · Momentum Catalyst</h2></div>
-          <div id="trades-b"></div>
         </article>
         <article class="trade-panel">
           <div class="trade-panel-head"><span class="role-tag adaptive">ADAPTIVE</span><h2>Model C · LLM Multi-Agent</h2></div>
