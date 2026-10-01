@@ -20,7 +20,7 @@ def test_breakout_signal_when_all_confirmations_pass():
         index=index,
     )
     signal = OpeningRangeVwapStrategy(1.5).evaluate(
-        "TEST", bars, True, datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN)
+        "TEST", bars, True, datetime(2026, 9, 25, 9, 55, tzinfo=EASTERN)
     )
     assert signal.decision == Decision.BUY
     assert signal.relative_volume > 1.5
@@ -32,7 +32,7 @@ def test_no_trade_without_market_alignment():
         {"open": 100, "high": 101, "low": 99, "close": 102, "volume": [100]*24+[1000]}, index=index
     )
     signal = OpeningRangeVwapStrategy().evaluate(
-        "TEST", bars, False, datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN)
+        "TEST", bars, False, datetime(2026, 9, 25, 9, 55, tzinfo=EASTERN)
     )
     assert signal.decision == Decision.HOLD
     assert "market alignment" in signal.reason
@@ -73,7 +73,7 @@ def test_model_a_rejects_one_bar_false_breakout_without_hold_confirmation():
         index=index,
     )
     signal = OpeningRangeVwapStrategy(1.5).evaluate(
-        "FALSE", bars, True, datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN)
+        "FALSE", bars, True, datetime(2026, 9, 25, 9, 55, tzinfo=EASTERN)
     )
     assert signal.decision == Decision.HOLD
     assert "breakout hold" in signal.context["failed_conditions"]
@@ -101,3 +101,36 @@ def test_model_a_rejects_extended_reentry_chase():
     assert signal.decision == Decision.HOLD
     assert "not extended" in signal.context["failed_conditions"]
     assert signal.context["extension_from_or_pct"] > 6.0
+
+
+def test_model_a_rejects_incomplete_opening_range():
+    index = pd.date_range("2026-09-25 09:30", periods=25, freq="min", tz=EASTERN).delete(5)
+    close = np.linspace(100.0, 102.0, len(index))
+    bars = pd.DataFrame(
+        {"open": close - .1, "high": close + .1, "low": close - .2, "close": close, "volume": [500] * len(index)},
+        index=index,
+    )
+    signal = OpeningRangeVwapStrategy(1.5).evaluate(
+        "MISS", bars, True, datetime(2026, 9, 25, 9, 55, tzinfo=EASTERN)
+    )
+    assert signal.decision == Decision.HOLD
+    assert "opening range incomplete" in signal.context["failed_conditions"]
+
+
+def test_model_a_ignores_current_forming_minute_bar():
+    index = pd.date_range("2026-09-25 09:30", periods=26, freq="min", tz=EASTERN)
+    close = np.array([100.0] * 25 + [110.0])
+    bars = pd.DataFrame(
+        {
+            "open": close - .1,
+            "high": close + .1,
+            "low": close - .2,
+            "close": close,
+            "volume": [100] * 24 + [1000, 5000],
+        },
+        index=index,
+    )
+    signal = OpeningRangeVwapStrategy(1.5).evaluate(
+        "PARTIAL", bars, True, datetime(2026, 9, 25, 9, 55, 30, tzinfo=EASTERN)
+    )
+    assert signal.price < 110.0
