@@ -495,7 +495,7 @@ class TradingEngine:
         await self._refresh_universe_if_needed(now)
         symbols = list(dict.fromkeys([*self.universe, "SPY", "QQQ"]))
         bars = await asyncio.to_thread(self.broker.minute_bars, symbols)
-        market_aligned = self._market_alignment(bars)
+        market_aligned = self._market_alignment(bars, now)
         await asyncio.to_thread(self.news.refresh, self.universe)
 
         locked = set(position_map)
@@ -1100,7 +1100,8 @@ class TradingEngine:
         return now.weekday() < 5 and time(9, 35) <= now.time() <= time(14, 30)
 
     @staticmethod
-    def _market_alignment(bars: dict) -> bool:
+    def _market_alignment(bars: dict, now: datetime | None = None) -> bool:
+        current_time = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         aligned = 0
         observed = 0
         for benchmark in ("SPY", "QQQ"):
@@ -1110,16 +1111,10 @@ class TradingEngine:
 
             recent = frame.copy().sort_index()
             index = recent.index
-            try:
-                if index.tz is None:
-                    index = index.tz_localize("UTC")
-                recent.index = index.tz_convert(EASTERN)
-                today = datetime.now(EASTERN).date()
-                recent = recent[recent.index.date == today]
-            except Exception:
-                pass
-
-            recent = recent.tail(30)
+            if index.tz is None:
+                index = index.tz_localize("UTC")
+            recent.index = index.tz_convert(EASTERN)
+            recent = recent[recent.index.date == current_time.date()].tail(30)
             if len(recent) < 6:
                 continue
 
