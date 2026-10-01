@@ -34,6 +34,7 @@ class Settings:
     secret_key: str = field(default_factory=lambda: os.getenv("ALPACA_SECRET_KEY", ""))
     paper: bool = field(default_factory=lambda: _bool("ALPACA_PAPER", False))
     action_day_mode: bool = field(default_factory=lambda: _bool("ACTION_DAY_MODE", True))
+    market_data_feed: str = field(default_factory=lambda: os.getenv("ALPACA_DATA_FEED", "iex").strip().lower())
 
     # Historical/backtest baseline. The live A/B engine does NOT assume this balance.
     starting_balance: float = field(default_factory=lambda: _float("STARTING_BALANCE", 100_000))
@@ -62,6 +63,12 @@ class Settings:
     model_a_confirmation_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_CONFIRMATION_BARS", "2")))
     model_a_max_extension_from_or_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_OR_PCT", 0.06))
     model_a_max_extension_from_vwap_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT", 0.04))
+    model_a_max_bar_age_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_BAR_AGE_SECONDS", "120")))
+    model_a_max_entry_spread_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_ENTRY_SPREAD_PCT", 0.01))
+    model_a_max_entry_slippage_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_ENTRY_SLIPPAGE_PCT", 0.005))
+    model_a_quote_max_age_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_QUOTE_MAX_AGE_SECONDS", "5")))
+    model_a_reentry_cooldown_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_REENTRY_COOLDOWN_MINUTES", "15")))
+    model_a_max_entries_per_symbol: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_ENTRIES_PER_SYMBOL", "2")))
 
     # Model B is intentionally aggressive for PAPER experimentation.
     model_b_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_B_RISK_PER_TRADE_PCT", 0.01))
@@ -243,6 +250,18 @@ class Settings:
             raise ValueError("MODEL_A_MAX_EXTENSION_FROM_OR_PCT must be between 0 and 1.")
         if not (0 < self.model_a_max_extension_from_vwap_pct < 1):
             raise ValueError("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT must be between 0 and 1.")
+        if self.market_data_feed not in {"iex", "sip"}:
+            raise ValueError("ALPACA_DATA_FEED must be \'iex\' or \'sip\'.")
+        if self.model_a_max_bar_age_seconds <= 0 or self.model_a_quote_max_age_seconds <= 0:
+            raise ValueError("Model A data freshness windows must be positive.")
+        if not (0 < self.model_a_max_entry_spread_pct < 1):
+            raise ValueError("MODEL_A_MAX_ENTRY_SPREAD_PCT must be between 0 and 1.")
+        if not (0 <= self.model_a_max_entry_slippage_pct < 1):
+            raise ValueError("MODEL_A_MAX_ENTRY_SLIPPAGE_PCT must be between 0 and 1.")
+        if self.model_a_reentry_cooldown_minutes < 0:
+            raise ValueError("MODEL_A_REENTRY_COOLDOWN_MINUTES cannot be negative.")
+        if self.model_a_max_entries_per_symbol <= 0:
+            raise ValueError("MODEL_A_MAX_ENTRIES_PER_SYMBOL must be positive.")
 
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")
