@@ -28,13 +28,14 @@ def _available_time_of_day_rvol(bars: pd.DataFrame, now: datetime, fallback: flo
     if current.empty:
         return fallback, "1m_vs_trailing_20m"
 
-    current_cutoff = current[current.index.time <= now.time()]
+    cutoff = now.replace(second=0, microsecond=0)
+    current_cutoff = current[current.index < cutoff]
     current_volume = float(current_cutoff["volume"].sum())
     prior_dates = sorted({day for day in regular.index.date if day < now.date()}, reverse=True)
     baselines = []
     for day in prior_dates[:5]:
         prior = regular[regular.index.date == day]
-        prior_cutoff = prior[prior.index.time <= now.time()]
+        prior_cutoff = prior[prior.index.time < cutoff.time()]
         if not prior_cutoff.empty:
             baselines.append(float(prior_cutoff["volume"].sum()))
     if baselines:
@@ -83,14 +84,29 @@ class OpeningRangeVwapStrategy:
                 context={"failed_conditions": ["insufficient minute bars"]},
             )
 
-        session = _enrich(_session_frame(bars, now))
+        raw_session = _session_frame(bars, now)
+        current_minute = now.replace(second=0, microsecond=0)
+        # Alpaca minute-bar timestamps mark the start of the minute. Do not use
+        # the current, still-forming candle as a breakout confirmation.
+        completed_session = raw_session[raw_session.index < current_minute]
+        session = _enrich(completed_session)
+
         opening = session.between_time("09:30", "09:44")
-        if opening.empty:
+        expected_opening_minutes = {
+            (datetime.combine(now.date(), time(9, 30), tzinfo=EASTERN) + pd.Timedelta(minutes=i)).time()
+            for i in range(15)
+        }
+        observed_opening_minutes = {stamp.time().replace(tzinfo=None) for stamp in opening.index}
+        if len(opening) < 15 or not expected_opening_minutes.issubset(observed_opening_minutes):
             return Signal(
                 symbol, Decision.HOLD, 0, 0, 0, 0, market_aligned,
-                "Opening range not available", now,
+                "Opening range incomplete", now,
                 setup="opening_range_breakout",
-                context={"failed_conditions": ["opening range not available"]},
+                context={
+                    "failed_conditions": ["opening range incomplete"],
+                    "opening_bars": len(opening),
+                    "required_opening_bars": 15,
+                },
             )
 
         last = session.iloc[-1]
