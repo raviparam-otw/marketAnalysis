@@ -17,6 +17,33 @@ def _session_frame(bars: pd.DataFrame, now: datetime) -> pd.DataFrame:
     return frame[frame.index.date == now.date()]
 
 
+def _available_time_of_day_rvol(bars: pd.DataFrame, now: datetime, fallback: float) -> tuple[float, str]:
+    frame = bars.copy().sort_index()
+    index = pd.DatetimeIndex(frame.index)
+    if index.tz is None:
+        index = index.tz_localize("UTC")
+    frame.index = index.tz_convert(EASTERN)
+    regular = frame.between_time("09:30", "16:00")
+    current = regular[regular.index.date == now.date()]
+    if current.empty:
+        return fallback, "1m_vs_trailing_20m"
+
+    current_cutoff = current[current.index.time <= now.time()]
+    current_volume = float(current_cutoff["volume"].sum())
+    prior_dates = sorted({day for day in regular.index.date if day < now.date()}, reverse=True)
+    baselines = []
+    for day in prior_dates[:5]:
+        prior = regular[regular.index.date == day]
+        prior_cutoff = prior[prior.index.time <= now.time()]
+        if not prior_cutoff.empty:
+            baselines.append(float(prior_cutoff["volume"].sum()))
+    if baselines:
+        baseline = float(pd.Series(baselines).median())
+        if baseline > 0:
+            return current_volume / baseline, "cumulative_same_time"
+    return fallback, "1m_vs_trailing_20m"
+
+
 def _enrich(session: pd.DataFrame) -> pd.DataFrame:
     frame = session.copy()
     typical = (frame["high"] + frame["low"] + frame["close"]) / 3
@@ -37,12 +64,14 @@ class OpeningRangeVwapStrategy:
         confirmation_bars: int = 2,
         max_extension_from_or_pct: float = 0.06,
         max_extension_from_vwap_pct: float = 0.04,
+        max_bar_age_seconds: int = 120,
     ) -> None:
         self.relative_volume_min = relative_volume_min
         self.breakout_buffer_pct = breakout_buffer_pct
         self.confirmation_bars = max(1, int(confirmation_bars))
         self.max_extension_from_or_pct = max_extension_from_or_pct
         self.max_extension_from_vwap_pct = max_extension_from_vwap_pct
+        self.max_bar_age_seconds = max(1, int(max_bar_age_seconds))
 
     def evaluate(self, symbol: str, bars: pd.DataFrame, market_aligned: bool, now: datetime | None = None, catalyst: dict | None = None) -> Signal:
         now = (now or datetime.now(EASTERN)).astimezone(EASTERN)
@@ -65,10 +94,25 @@ class OpeningRangeVwapStrategy:
             )
 
         last = session.iloc[-1]
+        last_timestamp = session.index[-1]
+        bar_age_seconds = max(0.0, (now - last_timestamp.to_pydatetime()).total_seconds())
+        if bar_age_seconds > self.max_bar_age_seconds:
+            return Signal(
+                symbol, Decision.HOLD, 0, 0, 0, 0, market_aligned,
+                "Rejected: stale market bar", now,
+                setup="opening_range_breakout",
+                context={
+                    "failed_conditions": ["stale market bar"],
+                    "bar_age_seconds": bar_age_seconds,
+                    "max_bar_age_seconds": self.max_bar_age_seconds,
+                },
+            )
+
         price = float(last["close"])
         vwap = float(last["vwap"])
         opening_high = float(opening["high"].max())
-        rvol = float(last["relative_volume"]) if pd.notna(last["relative_volume"]) else 0.0
+        volume_acceleration = float(last["relative_volume"]) if pd.notna(last["relative_volume"]) else 0.0
+        rvol, rvol_mode = _available_time_of_day_rvol(bars, now, volume_acceleration)
 
         breakout_level = opening_high * (1 + self.breakout_buffer_pct)
         recent = session.iloc[-3:]
@@ -114,6 +158,9 @@ class OpeningRangeVwapStrategy:
             "max_extension_from_vwap_pct": self.max_extension_from_vwap_pct * 100,
             "latest_green": latest_green,
             "previous_close": previous_close,
+            "bar_age_seconds": bar_age_seconds,
+            "rvol_mode": rvol_mode,
+            "volume_acceleration_1m_vs_20m": volume_acceleration,
         }
 
         # Prefer persistent breakouts, not a one-bar poke above the opening range.
