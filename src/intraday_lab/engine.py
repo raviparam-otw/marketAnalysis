@@ -772,22 +772,21 @@ class TradingEngine:
             return []
 
         stack_status = self.model_c_intelligence.status()
-        if self.config.model_c_require_full_stack:
-            missing = [
-                name
-                for name, state in stack_status.items()
-                if state.get("enabled") and not state.get("ready")
-            ]
-            if missing:
-                if model.last_scan_log_at is None or now - model.last_scan_log_at >= timedelta(seconds=60):
-                    model.log(
-                        "WARN",
-                        "Model C full stack not ready",
-                        missing=missing,
-                        stack=stack_status,
-                    )
-                    model.last_scan_log_at = now
-                return []
+        missing = [
+            name
+            for name, state in stack_status.items()
+            if state.get("enabled") and not state.get("ready")
+        ]
+        if missing and (
+            model.last_scan_log_at is None
+            or now - model.last_scan_log_at >= timedelta(seconds=60)
+        ):
+            model.log(
+                "WARN",
+                "Model C auxiliary intelligence degraded; Fin-R1 remains active",
+                missing=missing,
+                stack=stack_status,
+            )
 
         if (
             model.last_decision_at is not None
@@ -819,24 +818,21 @@ class TradingEngine:
                 catalysts=catalysts,
             )
 
-            if self.config.model_c_require_full_stack:
-                enrichment_errors = {
-                    item["symbol"]: {
-                        key: item.get(key, {}).get("error")
-                        for key in ("finbert", "kronos")
-                        if item.get(key, {}).get("error")
-                    }
-                    for item in shortlist
+            enrichment_errors = {
+                item["symbol"]: {
+                    key: item.get(key, {}).get("error")
+                    for key in ("finbert", "kronos")
+                    if item.get(key, {}).get("error")
                 }
-                enrichment_errors = {key: value for key, value in enrichment_errors.items() if value}
-                if enrichment_errors:
-                    model.log(
-                        "ERROR",
-                        "Model C intelligence enrichment failed",
-                        errors=enrichment_errors,
-                    )
-                    model.last_decision_at = now
-                    return []
+                for item in shortlist
+            }
+            enrichment_errors = {key: value for key, value in enrichment_errors.items() if value}
+            if enrichment_errors:
+                model.log(
+                    "WARN",
+                    "Model C continuing with partial intelligence",
+                    errors=enrichment_errors,
+                )
 
         for item in shortlist:
             preview = Signal(
