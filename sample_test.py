@@ -59,6 +59,66 @@ def size_signal(config: Settings, model: str, signal, capital: float) -> dict:
     }
 
 
+def validate_live_model_c(
+    *,
+    decision: dict,
+    shortlist: list[dict],
+    signal,
+    risk: dict | None,
+    min_confidence: float,
+) -> dict[str, bool]:
+    """Validate live inference semantics without requiring Fin-R1 to choose BUY."""
+    decision_value = str(decision.get("decision", "")).upper()
+    allowed_symbols = {str(item["symbol"]).upper() for item in shortlist}
+    selected_symbol = str(decision.get("symbol") or "").upper()
+
+    try:
+        confidence = float(decision["confidence"])
+        confidence_valid = 0.0 <= confidence <= 1.0
+    except (KeyError, TypeError, ValueError):
+        confidence = 0.0
+        confidence_valid = False
+
+    checks = {
+        "C decision is BUY or HOLD": decision_value in {"BUY", "HOLD"},
+        "C confidence is numeric and bounded": confidence_valid,
+    }
+    if decision_value == "HOLD":
+        checks["C HOLD creates no signal"] = signal is None
+        checks["C HOLD requires no risk sizing"] = risk is None
+        return checks
+
+    if decision_value != "BUY":
+        return checks
+
+    def positive_number(name: str) -> bool:
+        try:
+            return float(decision[name]) > 0.0
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    eligible = confidence_valid and confidence >= min_confidence
+    checks.update(
+        {
+            "C BUY symbol is in deterministic shortlist": selected_symbol in allowed_symbols,
+            "C BUY stop percentage is valid": positive_number("stop_pct"),
+            "C BUY take-profit percentage is valid": positive_number("take_profit_pct"),
+            "C confidence threshold gates signal": (signal is not None) == eligible,
+        }
+    )
+    if eligible:
+        checks["C eligible BUY signal matches selected symbol"] = (
+            signal is not None and signal.symbol == selected_symbol
+        )
+        checks["C eligible BUY has a valid protective stop"] = (
+            signal is not None and 0 < signal.stop_price < signal.price
+        )
+        checks["C eligible BUY passes risk sizing"] = bool(risk and risk.get("allowed"))
+    else:
+        checks["C ineligible BUY creates no signal or sizing"] = signal is None and risk is None
+    return checks
+
+
 def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) -> dict:
     bars = load_sample_bars()
     news = load_json("news.json")
@@ -187,10 +247,34 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
         },
     }
 
-    expected = {
-        "A": results["models"]["A"]["decision"] == "BUY",
-        "C": results["models"]["C"]["decision"] == "BUY",
-    }
+    expected = {"A": results["models"]["A"]["decision"] == "BUY"}
+    if live_llm:
+        expected.update(
+            validate_live_model_c(
+                decision=decision_c,
+                shortlist=shortlist,
+                signal=signal_c,
+                risk=results["models"]["C"]["risk"],
+                min_confidence=config.model_c_min_confidence,
+            )
+        )
+        results["live_model_c_result"] = {
+            "decision": str(decision_c.get("decision", "")).upper(),
+            "selected_symbol": decision_c.get("symbol"),
+            "confidence": decision_c.get("confidence"),
+            "rationale": decision_c.get("rationale"),
+            "shortlist": results["models"]["C"]["shortlist"],
+            "finbert": {
+                symbol: evidence["finbert"]
+                for symbol, evidence in results["models"]["C"]["stack"].items()
+            },
+            "kronos": {
+                symbol: evidence["kronos"]
+                for symbol, evidence in results["models"]["C"]["stack"].items()
+            },
+        }
+    else:
+        expected["C"] = results["models"]["C"]["decision"] == "BUY"
     results["passed"] = all(expected.values())
     results["checks"] = expected
     return results
@@ -214,7 +298,11 @@ def main() -> int:
     args = parser.parse_args()
 
     result = run_sample(live_llm=args.live_llm, capital_per_model=args.capital)
-    print(json.dumps(result, indent=2))
+    if args.live_llm:
+        print("Normalized live Model C result")
+        print(json.dumps(result["live_model_c_result"], indent=2, default=str))
+        print()
+    print(json.dumps(result, indent=2, default=str))
     print()
     for model, passed in result["checks"].items():
         print(f"[{'PASS' if passed else 'FAIL'}] Model {model}")

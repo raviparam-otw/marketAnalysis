@@ -1,6 +1,8 @@
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from intraday_lab.engine import TradingEngine
 from intraday_lab.experiment import ExperimentSessionStore
 
 
@@ -52,3 +54,54 @@ def test_legacy_session_can_be_replaced_with_two_way_split(tmp_path):
     assert migrated.state == "READY"
     assert round(sum(migrated.allocations.values()), 2) == 99_588.70
     assert (tmp_path / "session-2026-09-28.legacy.json").exists()
+
+
+def legacy_engine(store):
+    engine = object.__new__(TradingEngine)
+    engine.session_store = store
+    engine.session = store.load_today(NOW)
+    engine.models = {
+        name: SimpleNamespace(
+            risk=SimpleNamespace(configure_session_capital=lambda capital: None),
+            peak_equity=0.0,
+            capital=0.0,
+            log=lambda *args, **kwargs: None,
+        )
+        for name in ("A", "C")
+    }
+    return engine
+
+
+def test_flat_a_b_legacy_session_migrates_to_a_c(tmp_path):
+    store = ExperimentSessionStore(tmp_path)
+    legacy = store.create_or_load(100_000, NOW)
+    legacy.allocations = {"A": 50_000.0, "B": 50_000.0}
+    store.save(legacy, NOW)
+    engine = legacy_engine(store)
+
+    migrated = engine.upgrade_session_if_flat(
+        account={"equity": 83_421.17}, positions=[], open_orders=[], now=NOW
+    )
+
+    assert migrated is True
+    assert engine.session.allocations == {"A": 41_710.59, "C": 41_710.58}
+
+
+def test_legacy_session_is_not_rewritten_with_positions_or_orders(tmp_path):
+    for positions, orders in (([SimpleNamespace(symbol="OLD")], []), ([], [object()])):
+        case_dir = tmp_path / ("positions" if positions else "orders")
+        store = ExperimentSessionStore(case_dir)
+        legacy = store.create_or_load(100_000, NOW)
+        legacy.allocations = {"A": 50_000.0, "B": 50_000.0}
+        store.save(legacy, NOW)
+        engine = legacy_engine(store)
+
+        migrated = engine.upgrade_session_if_flat(
+            account={"equity": 83_421.17},
+            positions=positions,
+            open_orders=orders,
+            now=NOW,
+        )
+
+        assert migrated is False
+        assert store.load_today(NOW).allocations == {"A": 50_000.0, "B": 50_000.0}

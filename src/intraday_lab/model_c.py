@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -14,6 +15,43 @@ from .models import Decision, Signal
 
 
 EASTERN = ZoneInfo("America/New_York")
+_HEALTH_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+
+
+def _reasoner_health(base_url: str, model: str, *, cache_seconds: float = 10.0) -> dict:
+    if not base_url.strip() or not model.strip():
+        return {"state": "NOT_CONFIGURED", "reachable": False, "error": None}
+
+    key = (base_url, model)
+    now = time.monotonic()
+    cached = _HEALTH_CACHE.get(key)
+    if cached and now - cached[0] < cache_seconds:
+        return cached[1]
+
+    try:
+        endpoint = base_url.rstrip("/") + "/models"
+        with request.urlopen(endpoint, timeout=1.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        exposed = [str(item.get("id", "")) for item in payload.get("data", [])]
+        if not exposed:
+            raise ValueError("The Fin-R1 /models response contained no model IDs.")
+        result = {
+            "state": "REACHABLE",
+            "reachable": True,
+            "model_match": model in exposed,
+            "exposed_models": exposed,
+            "error": None,
+        }
+    except Exception as exc:
+        result = {
+            "state": "ERROR",
+            "reachable": False,
+            "model_match": False,
+            "exposed_models": [],
+            "error": str(exc),
+        }
+    _HEALTH_CACHE[key] = (now, result)
+    return result
 
 
 def _clean_json_text(text: str) -> str:
@@ -62,7 +100,8 @@ class ModelCAdvisor:
         return bool(self.base_url.strip() and self.model.strip())
 
     def status(self, execution_enabled: bool = False) -> dict:
-        active = self.configured and execution_enabled
+        health = _reasoner_health(self.base_url, self.model)
+        active = self.configured and health["reachable"] and execution_enabled
         stack = self.intelligence.status() if self.intelligence is not None else {}
         return {
             "name": "C",
@@ -73,15 +112,21 @@ class ModelCAdvisor:
             "model": self.model or None,
             "base_url": self.base_url or None,
             "reasoner": "Fin-R1",
+            "reasoner_health": health,
+            "state": health["state"],
             "stack": stack,
             "architecture": "FinBERT sentiment + Kronos forecast + Fin-R1 analyst/risk/portfolio manager",
             "message": (
-                "Fin-R1 stack configured and eligible for PAPER execution."
+                "Fin-R1 is reachable and eligible for PAPER execution."
                 if active
                 else (
-                    "Fin-R1 connected; PAPER execution disabled by configuration."
-                    if self.configured
-                    else "Start Fin-R1 and configure MODEL_C_LLM_BASE_URL."
+                    "Fin-R1 is reachable; PAPER execution disabled by configuration."
+                    if health["reachable"]
+                    else (
+                        "Fin-R1 is configured but unreachable."
+                        if self.configured
+                        else "Start Fin-R1 and configure MODEL_C_LLM_BASE_URL."
+                    )
                 )
             ),
         }

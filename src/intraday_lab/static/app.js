@@ -71,12 +71,11 @@ function renderSession(d){
   const c=d.model_c||{};
   const stack=c.stack||{};
   const enabledStack=Object.values(stack).filter(x=>x&&x.enabled);
-  const stackReady=enabledStack.length>0&&enabledStack.every(x=>x.ready);
-  const cState=c.execution_enabled&&stackReady
-    ?'FIN-R1 + KRONOS + FINBERT READY'
-    :c.configured
-      ?(stackReady?'FIN-R1 READY / EXECUTION OFF':'MODEL C STACK INCOMPLETE')
-      :'FIN-R1 SETUP';
+  const degraded=enabledStack.some(x=>x.state==='DEGRADED'||!x.ready);
+  const reasonerReachable=Boolean(c.reasoner_health&&c.reasoner_health.reachable);
+  const cState=reasonerReachable
+    ?(degraded?'FIN-R1 REACHABLE / AUXILIARY DEGRADED':(c.execution_enabled?'MODEL C READY':'FIN-R1 REACHABLE / EXECUTION OFF'))
+    :(c.configured?'FIN-R1 ERROR':'FIN-R1 NOT CONFIGURED');
   document.querySelector('#session-meta').innerHTML=`
     <span><b>Session</b> ${esc(e.session_id||'preview')}</span>
     <span><b>Started</b> ${esc(startedAt)}</span>

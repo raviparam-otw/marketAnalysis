@@ -38,6 +38,21 @@ class FakeForecaster:
         }
 
 
+class FailingComponent:
+    enabled = True
+    ready = True
+    model_name = "failing-component"
+    tokenizer_name = "failing-tokenizer"
+    device = "cpu"
+    last_error = None
+
+    def analyze(self, text):
+        raise RuntimeError("sentiment unavailable")
+
+    def forecast(self, bars):
+        raise RuntimeError("forecast unavailable")
+
+
 def test_stack_enriches_shortlist_with_sentiment_and_forecast():
     stack = FinanceIntelligenceStack(
         sentiment=FakeSentiment(),
@@ -96,3 +111,19 @@ def test_kronos_device_is_configurable_without_loading_model():
         enabled=False,
     )
     assert forecaster.device == "cpu"
+
+
+def test_auxiliary_failures_are_recorded_as_degraded_evidence():
+    sentiment = FailingComponent()
+    forecaster = FailingComponent()
+    stack = FinanceIntelligenceStack(sentiment=sentiment, forecaster=forecaster)
+    enriched = stack.enrich(
+        [{"symbol": "TEST", "catalyst_headline": "Synthetic headline"}],
+        bars_by_symbol={"TEST": pd.DataFrame({"close": [10.0]})},
+        catalysts={"TEST": {"headline": "Synthetic headline"}},
+    )
+
+    assert enriched[0]["finbert"]["available"] is False
+    assert enriched[0]["kronos"]["available"] is False
+    assert stack.status()["finbert"]["state"] == "DEGRADED"
+    assert stack.status()["kronos"]["state"] == "DEGRADED"

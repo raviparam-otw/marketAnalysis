@@ -12,13 +12,14 @@ class FinBERTSentiment:
     """Lazy local ProsusAI/finbert sentiment provider.
 
     Heavy ML dependencies are imported only when sentiment is actually requested,
-    keeping normal CI/tests and Models A/B lightweight.
+    keeping normal CI/tests and Model A lightweight.
     """
 
     def __init__(self, model_name: str, enabled: bool = True) -> None:
         self.model_name = model_name
         self.enabled = enabled
         self._pipeline = None
+        self.last_error: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -123,6 +124,7 @@ class KronosForecaster:
         self.pred_len = pred_len
         self.enabled = enabled
         self._predictor = None
+        self.last_error: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -283,11 +285,20 @@ class FinanceIntelligenceStack:
         return cls(sentiment=sentiment, forecaster=forecaster)
 
     def status(self) -> dict:
+        def component_state(component) -> str:
+            if component is None or not getattr(component, "enabled", True):
+                return "DISABLED"
+            if getattr(component, "last_error", None):
+                return "DEGRADED"
+            return "READY" if getattr(component, "ready", False) else "DEGRADED"
+
         return {
             "finbert": {
                 "enabled": bool(self.sentiment and getattr(self.sentiment, "enabled", True)),
                 "ready": bool(self.sentiment and getattr(self.sentiment, "ready", True)),
                 "model": getattr(self.sentiment, "model_name", None),
+                "state": component_state(self.sentiment),
+                "error": getattr(self.sentiment, "last_error", None),
             },
             "kronos": {
                 "enabled": bool(self.forecaster and getattr(self.forecaster, "enabled", True)),
@@ -295,6 +306,8 @@ class FinanceIntelligenceStack:
                 "model": getattr(self.forecaster, "model_name", None),
                 "tokenizer": getattr(self.forecaster, "tokenizer_name", None),
                 "device": getattr(self.forecaster, "device", None),
+                "state": component_state(self.forecaster),
+                "error": getattr(self.forecaster, "last_error", None),
             },
         }
 
@@ -315,13 +328,17 @@ class FinanceIntelligenceStack:
             if self.sentiment and getattr(self.sentiment, "enabled", True):
                 try:
                     item["finbert"] = self.sentiment.analyze(headline)
+                    self.sentiment.last_error = None
                 except Exception as exc:
+                    self.sentiment.last_error = str(exc)
                     item["finbert"] = {"error": str(exc), "available": False}
 
             if self.forecaster and getattr(self.forecaster, "enabled", True):
                 try:
                     item["kronos"] = self.forecaster.forecast(bars_by_symbol.get(symbol))
+                    self.forecaster.last_error = None
                 except Exception as exc:
+                    self.forecaster.last_error = str(exc)
                     item["kronos"] = {"error": str(exc), "available": False}
 
             enriched.append(item)

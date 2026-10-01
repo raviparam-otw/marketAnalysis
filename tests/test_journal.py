@@ -25,9 +25,9 @@ def order(order_id="o-1", status="accepted", **changes):
 
 def test_writes_model_and_signal_context(tmp_path):
     journal = TradeJournal(tmp_path, now_fn=lambda: NOW)
-    journal.record_order(order(), model="B", side="BUY", symbol="TEST", reason="momentum", requested_qty=100, signal_price=10, signal_context={"gap_pct": 12})
+    journal.record_order(order(), model="C", side="BUY", symbol="TEST", reason="adaptive", requested_qty=100, signal_price=10, signal_context={"gap_pct": 12})
     payload = json.loads((tmp_path / "trades-2026-09-28.json").read_text())
-    assert payload["trades"][0]["model"] == "B"
+    assert payload["trades"][0]["model"] == "C"
     assert payload["trades"][0]["signal_context"]["gap_pct"] == 12
 
 
