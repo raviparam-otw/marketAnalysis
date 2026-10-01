@@ -964,6 +964,98 @@ class TradingEngine:
         for symbol, guard in list(model.guards.items()):
             position = position_map.get(symbol)
             if position is None:
+                if model.name == "A" and guard.entry_order_id:
+                    try:
+                        parent = await asyncio.to_thread(
+                            self.broker.order_nested,
+                            guard.entry_order_id,
+                        )
+                        parent_status = str(
+                            getattr(
+                                getattr(parent, "status", None),
+                                "value",
+                                getattr(parent, "status", ""),
+                            )
+                        ).lower()
+                        stop_leg = None
+                        for leg in list(getattr(parent, "legs", None) or []):
+                            side = str(
+                                getattr(
+                                    getattr(leg, "side", None),
+                                    "value",
+                                    getattr(leg, "side", ""),
+                                )
+                            ).lower()
+                            if side == "sell" and getattr(leg, "stop_price", None) not in (None, ""):
+                                stop_leg = leg
+                                guard.protective_stop_order_id = str(leg.id)
+                                break
+
+                        if stop_leg is not None:
+                            stop_status = str(
+                                getattr(
+                                    getattr(stop_leg, "status", None),
+                                    "value",
+                                    getattr(stop_leg, "status", ""),
+                                )
+                            ).lower()
+                            if stop_status == "filled":
+                                self.journal.record_order(
+                                    stop_leg,
+                                    model=model.name,
+                                    side="SELL",
+                                    symbol=symbol,
+                                    reason="broker_protective_stop",
+                                    trade_id=guard.trade_id,
+                                    session_id=self.session.session_id if self.session else None,
+                                    requested_qty=guard.quantity,
+                                    signal_price=float(getattr(stop_leg, "filled_avg_price", 0) or guard.stop_price),
+                                    signal_context={
+                                        "entry": guard.entry_price,
+                                        "stop": guard.stop_price,
+                                        "high_watermark": guard.high_watermark,
+                                    },
+                                )
+                                guard.exit_pending = True
+                                model.log(
+                                    "TRADE",
+                                    "Broker protective stop filled",
+                                    symbol=symbol,
+                                    stop_order_id=str(stop_leg.id),
+                                )
+                                continue
+
+                        terminal = {"canceled", "expired", "rejected", "replaced", "done_for_day"}
+                        elapsed = max(0.0, (now - guard.entered_at).total_seconds())
+                        if parent_status in terminal:
+                            model.guards.pop(symbol, None)
+                            model.log(
+                                "TRADE",
+                                "Unfilled Model A entry cleared",
+                                symbol=symbol,
+                                status=parent_status,
+                            )
+                        elif parent_status != "filled" and elapsed >= self.config.model_a_entry_timeout_seconds:
+                            try:
+                                await asyncio.to_thread(
+                                    self.broker.cancel_order,
+                                    guard.entry_order_id,
+                                )
+                                model.log(
+                                    "TRADE",
+                                    "Stale Model A entry canceled",
+                                    symbol=symbol,
+                                    age_seconds=round(elapsed, 1),
+                                )
+                            finally:
+                                model.guards.pop(symbol, None)
+                    except Exception as exc:
+                        model.log(
+                            "WARN",
+                            "Model A pending-entry status check failed",
+                            symbol=symbol,
+                            error=str(exc),
+                        )
                 continue
 
             current = float(position.current_price)
@@ -1074,6 +1166,22 @@ class TradingEngine:
                     continue
 
                 if stop_status == "filled":
+                    self.journal.record_order(
+                        stop_order,
+                        model=model.name,
+                        side="SELL",
+                        symbol=symbol,
+                        reason="broker_protective_stop",
+                        trade_id=guard.trade_id,
+                        session_id=self.session.session_id if self.session else None,
+                        requested_qty=guard.quantity,
+                        signal_price=float(getattr(stop_order, "filled_avg_price", 0) or guard.stop_price),
+                        signal_context={
+                            "entry": entry,
+                            "stop": guard.stop_price,
+                            "high_watermark": guard.high_watermark,
+                        },
+                    )
                     guard.exit_pending = True
                     model.log(
                         "TRADE",
