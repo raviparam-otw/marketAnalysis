@@ -69,6 +69,7 @@ class Settings:
     model_a_quote_max_age_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_QUOTE_MAX_AGE_SECONDS", "5")))
     model_a_reentry_cooldown_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_REENTRY_COOLDOWN_MINUTES", "15")))
     model_a_max_entries_per_symbol: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_ENTRIES_PER_SYMBOL", "2")))
+    model_a_entry_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_ENTRY_TIMEOUT_SECONDS", "20")))
 
     # Model B is intentionally aggressive for PAPER experimentation.
     model_b_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_B_RISK_PER_TRADE_PCT", 0.01))
@@ -262,6 +263,8 @@ class Settings:
             raise ValueError("MODEL_A_REENTRY_COOLDOWN_MINUTES cannot be negative.")
         if self.model_a_max_entries_per_symbol <= 0:
             raise ValueError("MODEL_A_MAX_ENTRIES_PER_SYMBOL must be positive.")
+        if self.model_a_entry_timeout_seconds <= 0:
+            raise ValueError("MODEL_A_ENTRY_TIMEOUT_SECONDS must be positive.")
 
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")
