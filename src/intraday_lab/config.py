@@ -36,10 +36,10 @@ class Settings:
     action_day_mode: bool = field(default_factory=lambda: _bool("ACTION_DAY_MODE", True))
     market_data_feed: str = field(default_factory=lambda: os.getenv("ALPACA_DATA_FEED", "iex").strip().lower())
 
-    # Historical/backtest baseline. The live A/B engine does NOT assume this balance.
+    # Historical/backtest baseline. The live A/C engine does NOT assume this balance.
     starting_balance: float = field(default_factory=lambda: _float("STARTING_BALANCE", 100_000))
 
-    # Legacy fallback only. Live sessions freeze equal A/B/C allocations from Alpaca equity at Start.
+    # Legacy fallback only. Live sessions freeze equal A/C allocations from Alpaca equity at Start.
     model_capital: float = field(default_factory=lambda: _float("MODEL_CAPITAL", 50_000))
 
     # Risk scales with each model's frozen session allocation.
@@ -71,16 +71,6 @@ class Settings:
     model_a_max_entries_per_symbol: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_ENTRIES_PER_SYMBOL", "2")))
     model_a_entry_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_ENTRY_TIMEOUT_SECONDS", "20")))
 
-    # Model B is intentionally aggressive for PAPER experimentation.
-    model_b_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_B_RISK_PER_TRADE_PCT", 0.01))
-    model_b_max_position_pct: float = field(default_factory=lambda: _float("MODEL_B_MAX_POSITION_PCT", 0.20))
-    model_b_daily_loss_pct: float = field(default_factory=lambda: _float("MODEL_B_DAILY_LOSS_PCT", 0.05))
-    model_b_max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_TRADES_PER_DAY", "20")))
-    model_b_max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_CONSECUTIVE_LOSSES", "5")))
-    model_b_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_OPEN_POSITIONS", "5")))
-    model_b_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_B_MAX_EXPOSURE_PCT", 0.90))
-    model_b_max_entries_per_cycle: int = field(default_factory=lambda: int(os.getenv("MODEL_B_MAX_ENTRIES_PER_CYCLE", "3")))
-
     # Legacy absolute values remain available for the historical backtester/compatibility,
     # but the live engine derives its dollar limits from the percentages above.
     target_equity: float = field(default_factory=lambda: _float("TARGET_EQUITY", 150_000))
@@ -102,26 +92,19 @@ class Settings:
     stagnation_min_gain_pct: float = field(default_factory=lambda: _float("STAGNATION_MIN_GAIN_PCT", 0.005))
 
     relative_volume_min: float = field(default_factory=lambda: _float("RELATIVE_VOLUME_MIN", 1.5))
-    momentum_rvol_min: float = field(default_factory=lambda: _float("MOMENTUM_RVOL_MIN", 1.25))
-    momentum_gap_min_pct: float = field(default_factory=lambda: _float("MOMENTUM_GAP_MIN_PCT", 1.5))
-    momentum_change_min_pct: float = field(default_factory=lambda: _float("MOMENTUM_CHANGE_MIN_PCT", 2.0))
-    momentum_max_price: float = field(default_factory=lambda: _float("MOMENTUM_MAX_PRICE", 50.0))
-    momentum_require_news: bool = field(default_factory=lambda: _bool("MOMENTUM_REQUIRE_NEWS", False))
-    momentum_min_score: float = field(default_factory=lambda: _float("MOMENTUM_MIN_SCORE", 5.0))
-
     # Model C - finance-native adaptive stack.
     # Fin-R1 is the primary reasoning LLM. Kronos contributes K-line forecasts and
     # FinBERT contributes finance-specific headline sentiment.
     model_c_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_ENABLED", True))
     model_c_execution_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_EXECUTION_ENABLED", True))
-    model_c_llm_base_url: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_BASE_URL", ""))
-    model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", "Fin-R1"))
+    model_c_llm_base_url: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_BASE_URL", "http://127.0.0.1:8080/v1"))
+    model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", ".models/Fin-R1-4bit"))
     model_c_llm_api_key: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_API_KEY", ""))
     model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "60")))
     model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "60")))
     model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "5")))
     model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.68))
-    model_c_require_full_stack: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_FULL_STACK", True))
+    model_c_require_full_stack: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_FULL_STACK", False))
 
     model_c_finbert_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_FINBERT_ENABLED", True))
     model_c_finbert_model: str = field(default_factory=lambda: os.getenv("MODEL_C_FINBERT_MODEL", "ProsusAI/finbert"))
@@ -162,17 +145,6 @@ class Settings:
 
     def model_profile(self, model: str) -> dict:
         model = model.upper()
-        if model == "B":
-            return {
-                "risk_per_trade_pct": self.model_b_risk_per_trade_pct,
-                "max_position_pct": self.model_b_max_position_pct,
-                "daily_loss_pct": self.model_b_daily_loss_pct,
-                "max_trades_per_day": self.model_b_max_trades_per_day,
-                "max_consecutive_losses": self.model_b_max_consecutive_losses,
-                "max_open_positions": self.model_b_max_open_positions,
-                "max_exposure_pct": self.model_b_max_exposure_pct,
-                "max_entries_per_cycle": self.model_b_max_entries_per_cycle,
-            }
         if model == "C":
             return {
                 "risk_per_trade_pct": self.model_c_risk_per_trade_pct,
@@ -215,7 +187,7 @@ class Settings:
         if self.max_trades_per_day <= 0 or self.max_consecutive_losses <= 0:
             raise ValueError("Daily trade-count controls must be positive.")
 
-        for model in ("A", "B", "C"):
+        for model in ("A", "C"):
             profile = self.model_profile(model)
             for key in ("risk_per_trade_pct", "max_position_pct", "daily_loss_pct", "max_exposure_pct"):
                 if not (0 < float(profile[key]) <= 1):
