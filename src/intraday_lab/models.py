@@ -52,3 +52,5 @@ class PositionGuard:
     partial_taken: bool = False
     fill_risk_rebased: bool = False
     exit_pending: bool = False
+    entry_order_id: str | None = None
+    protective_stop_order_id: str | None = None
