@@ -296,6 +296,7 @@ class TradingEngine:
                 entered_at=entered_at,
                 current_price=float(position.current_price),
                 unrealized_pl=float(position.unrealized_pl),
+                entry_order_id=str(row.get("order_id") or "") or None,
             )
             recovered_symbols.add(symbol)
             model.log("WARN", "Recovered open PAPER position after restart", symbol=symbol, qty=qty)
@@ -652,7 +653,7 @@ class TradingEngine:
                         )
                         continue
 
-                    execution_price = ask
+                    execution_price = max_ask
                     execution_context = {
                         "entry_quote": {
                             "bid": bid,
@@ -683,12 +684,22 @@ class TradingEngine:
 
                 trade_id = f"{model.name}-{uuid4().hex[:12]}"
                 client_order_id = f"model-{model.name.lower()}-{trade_id.lower()}"
-                order = await asyncio.to_thread(
-                    self.broker.buy_qty,
-                    candidate.symbol,
-                    check.quantity,
-                    client_order_id,
-                )
+                if model.name == "A":
+                    order = await asyncio.to_thread(
+                        self.broker.buy_protected_limit_qty,
+                        candidate.symbol,
+                        check.quantity,
+                        execution_price,
+                        candidate.stop_price,
+                        client_order_id,
+                    )
+                else:
+                    order = await asyncio.to_thread(
+                        self.broker.buy_qty,
+                        candidate.symbol,
+                        check.quantity,
+                        client_order_id,
+                    )
 
                 profile = model.risk.profile
                 context = candidate.to_dict() | execution_context | {
@@ -722,6 +733,7 @@ class TradingEngine:
                     stop_price=candidate.stop_price,
                     entered_at=now,
                     current_price=execution_price,
+                    entry_order_id=str(order.id),
                 )
                 if model.name == "A":
                     model.entries_by_symbol[candidate.symbol] = model.entries_by_symbol.get(candidate.symbol, 0) + 1
@@ -965,6 +977,36 @@ class TradingEngine:
                 observed_high = max(observed_high, float(frame.tail(2)["high"].max()))
             guard.high_watermark = max(guard.high_watermark, observed_high)
 
+            if (
+                model.name == "A"
+                and guard.entry_order_id
+                and not guard.protective_stop_order_id
+            ):
+                try:
+                    parent = await asyncio.to_thread(
+                        self.broker.order_nested,
+                        guard.entry_order_id,
+                    )
+                    for leg in list(getattr(parent, "legs", None) or []):
+                        side = str(getattr(getattr(leg, "side", None), "value", getattr(leg, "side", ""))).lower()
+                        if side == "sell" and getattr(leg, "stop_price", None) not in (None, ""):
+                            guard.protective_stop_order_id = str(leg.id)
+                            model.log(
+                                "RISK",
+                                "Broker protective stop confirmed",
+                                symbol=symbol,
+                                stop_order_id=guard.protective_stop_order_id,
+                                stop_price=float(leg.stop_price),
+                            )
+                            break
+                except Exception as exc:
+                    model.log(
+                        "WARN",
+                        "Protective stop lookup failed",
+                        symbol=symbol,
+                        error=str(exc),
+                    )
+
             # Rebase the stop once the broker provides the actual fill so slippage at entry
             # cannot silently increase the intended dollar risk.
             if not guard.fill_risk_rebased and guard.quantity > 0:
@@ -998,6 +1040,58 @@ class TradingEngine:
 
             if not reason:
                 continue
+
+            if model.name == "A" and guard.protective_stop_order_id:
+                stop_id = guard.protective_stop_order_id
+                try:
+                    await asyncio.to_thread(self.broker.cancel_order, stop_id)
+                except Exception as exc:
+                    model.log(
+                        "WARN",
+                        "Protective stop cancel request failed",
+                        symbol=symbol,
+                        stop_order_id=stop_id,
+                        error=str(exc),
+                    )
+
+                try:
+                    stop_order = await asyncio.to_thread(self.broker.order, stop_id)
+                    stop_status = str(
+                        getattr(
+                            getattr(stop_order, "status", None),
+                            "value",
+                            getattr(stop_order, "status", ""),
+                        )
+                    ).lower()
+                except Exception as exc:
+                    model.log(
+                        "WARN",
+                        "Protective stop status unavailable; deferring software exit",
+                        symbol=symbol,
+                        stop_order_id=stop_id,
+                        error=str(exc),
+                    )
+                    continue
+
+                if stop_status == "filled":
+                    guard.exit_pending = True
+                    model.log(
+                        "TRADE",
+                        "Broker protective stop filled",
+                        symbol=symbol,
+                        stop_order_id=stop_id,
+                    )
+                    continue
+                if stop_status not in {"canceled", "expired", "rejected", "replaced", "done_for_day"}:
+                    model.log(
+                        "WARN",
+                        "Protective stop still active; deferring software exit",
+                        symbol=symbol,
+                        stop_order_id=stop_id,
+                        status=stop_status,
+                    )
+                    continue
+                guard.protective_stop_order_id = None
 
             qty = min(abs(float(position.qty)), guard.quantity)
             order = await asyncio.to_thread(
