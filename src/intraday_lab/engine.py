@@ -15,7 +15,7 @@ from .model_c import ModelCAdvisor
 from .models import Decision, PositionGuard, Signal
 from .news import AlpacaNewsService
 from .risk import RiskManager
-from .strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
+from .strategy import OpeningRangeVwapStrategy
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -71,7 +71,7 @@ class ModelRuntime:
 
 
 class TradingEngine:
-    """Paper-only three-model experiment with frozen daily A/B/C virtual allocations."""
+    """Paper-only two-model experiment with frozen daily A/C virtual allocations."""
 
     def __init__(self, config: Settings, broker: PaperBroker) -> None:
         self.config = config
@@ -102,13 +102,6 @@ class TradingEngine:
                     max_bar_age_seconds=config.model_a_max_bar_age_seconds,
                 ),
                 RiskManager(config, "A"),
-            ),
-            "B": ModelRuntime(
-                "B",
-                "CHALLENGER",
-                "Momentum Catalyst",
-                MomentumCatalystStrategy(config),
-                RiskManager(config, "B"),
             ),
             "C": ModelRuntime(
                 "C",
@@ -145,16 +138,16 @@ class TradingEngine:
             model.peak_equity = max(model.peak_equity, capital)
 
     @staticmethod
-    def _is_three_way_session(session: ExperimentSession | None) -> bool:
+    def _is_two_way_session(session: ExperimentSession | None) -> bool:
         if session is None:
             return False
         allocations = session.allocations
         return (
-            set(allocations) == {"A", "B", "C"}
-            and all(float(allocations.get(name, 0.0)) > 0 for name in ("A", "B", "C"))
+            set(allocations) == {"A", "C"}
+            and all(float(allocations.get(name, 0.0)) > 0 for name in ("A", "C"))
         )
 
-    def upgrade_legacy_session_if_flat(
+    def upgrade_session_if_flat(
         self,
         *,
         account: dict,
@@ -162,16 +155,16 @@ class TradingEngine:
         open_orders: list,
         now: datetime | None = None,
     ) -> bool:
-        """Migrate a same-day legacy A/B session only when the paper account is flat."""
+        """Migrate a same-day legacy session to A/C only when the paper account is flat."""
         current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         existing = self.session_store.load_today(current)
-        if existing is None or self._is_three_way_session(existing):
+        if existing is None or self._is_two_way_session(existing):
             self.session = existing
             return False
         if positions or open_orders:
             return False
 
-        self.session = self.session_store.replace_legacy_with_three_way(
+        self.session = self.session_store.replace_with_two_way(
             float(account["equity"]),
             current,
         )
@@ -179,7 +172,7 @@ class TradingEngine:
         for model in self.models.values():
             model.log(
                 "CONTROL",
-                "Legacy A/B session migrated to equal A/B/C split",
+                "Legacy session migrated to equal A/C split",
                 allocation=round(model.capital, 2),
                 session_id=self.session.session_id,
             )
@@ -208,7 +201,7 @@ class TradingEngine:
 
         positions = await asyncio.to_thread(self.broker.positions)
 
-        migrated = self.upgrade_legacy_session_if_flat(
+        migrated = self.upgrade_session_if_flat(
             account=account,
             positions=positions,
             open_orders=open_orders,
@@ -220,7 +213,7 @@ class TradingEngine:
         if positions and existing_session is None:
             symbols = ", ".join(sorted(str(position.symbol) for position in positions))
             raise RuntimeError(
-                "Cannot create a clean A/B/C session while pre-existing PAPER positions exist "
+                "Cannot create a clean A/C session while pre-existing PAPER positions exist "
                 f"({symbols}). Use Emergency Flatten first."
             )
 
@@ -266,7 +259,7 @@ class TradingEngine:
             ]
             if not candidates:
                 raise RuntimeError(
-                    f"Existing PAPER position {symbol} is not attributable to Model A/B/C. "
+                    f"Existing PAPER position {symbol} is not attributable to Model A/C. "
                     "Use Emergency Flatten before starting a clean experiment."
                 )
 
@@ -555,7 +548,7 @@ class TradingEngine:
                         ):
                             rejection_counts["reentry cooldown"] = rejection_counts.get("reentry cooldown", 0) + 1
                             continue
-                    catalyst = self.news.catalyst_for(symbol) if model.name == "B" else None
+                    catalyst = None
                     signal = model.strategy.evaluate(
                         symbol,
                         bars.get(symbol, self._empty_frame()),
@@ -1379,10 +1372,9 @@ class TradingEngine:
             session_state = self.session.state
         else:
             starting_equity = account_equity
-            preview_a = round(account_equity / 3.0, 2) if account_equity else 0.0
-            preview_b = round(account_equity / 3.0, 2) if account_equity else 0.0
-            preview_c = round(account_equity - preview_a - preview_b, 2) if account_equity else 0.0
-            allocations = {"A": preview_a, "B": preview_b, "C": preview_c}
+            preview_a = round(account_equity / 2.0, 2) if account_equity else 0.0
+            preview_c = round(account_equity - preview_a, 2) if account_equity else 0.0
+            allocations = {"A": preview_a, "C": preview_c}
             session_id = None
             started_at = None
             session_state = "READY"
@@ -1468,9 +1460,8 @@ class TradingEngine:
                 "account_equity": account_equity,
                 "account_pnl": account_pnl,
                 "allocation_a": float(allocations.get("A", 0.0)),
-                "allocation_b": float(allocations.get("B", 0.0)),
                 "allocation_c": float(allocations.get("C", 0.0)),
-                "split": "A/B/C equal thirds",
+                "split": "A/C equal halves",
                 "global_exposure": total_exposure,
                 "global_exposure_limit": starting_equity * (
                     max(self.config.max_account_exposure_pct, 0.80)
