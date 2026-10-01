@@ -105,7 +105,7 @@ class TradeJournal:
     def _summary(cls, trades: list[dict]) -> dict:
         filled = [trade for trade in trades if trade.get("status") == "filled"]
         by_model = {}
-        for model in ("A", "B", "C"):
+        for model in ("A", "C"):
             by_model[model] = cls._model_summary(
                 [trade for trade in trades if trade.get("model") == model]
             )
@@ -269,7 +269,7 @@ class TradeJournal:
             trade for trade in trades
             if trade.get("side") == "BUY"
             and trade.get("status") == "filled"
-            and trade.get("model") in {"A", "B", "C"}
+            and trade.get("model") in {"A", "C"}
         ]
         open_rows = []
         for buy in buys:
