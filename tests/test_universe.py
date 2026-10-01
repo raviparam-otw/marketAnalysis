@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from intraday_lab.universe import asset_is_eligible, rank_candidates, snapshot_candidate
+from intraday_lab.universe import UniverseCandidate, asset_is_eligible, rank_candidates, snapshot_candidate
 
 
 def asset(**overrides):
@@ -49,3 +49,9 @@ def test_candidates_rank_movers_before_plain_dollar_volume():
     liquid = snapshot_candidate("LIQ", snapshot(price=100, volume=100_000, prev_close=99, day_open=99), 1, 0, 0.005)
     assert mover and liquid
     assert rank_candidates([liquid, mover], 1) == ["MOVE"]
+
+
+def test_long_only_ranking_prefers_positive_mover():
+    rising = UniverseCandidate("UP", 10, 1_000_000, 0.001, gap_pct=2.0, change_pct=3.0)
+    falling = UniverseCandidate("DOWN", 10, 5_000_000, 0.001, gap_pct=-10.0, change_pct=-12.0)
+    assert rank_candidates([falling, rising], 1) == ["UP"]
