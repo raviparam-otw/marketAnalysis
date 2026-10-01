@@ -162,7 +162,7 @@ def offline_checks() -> list[Check]:
             "TESTA",
             _bars_for_model_a(),
             True,
-            datetime(2026, 9, 25, 9, 54, tzinfo=EASTERN),
+            datetime(2026, 9, 25, 9, 55, tzinfo=EASTERN),
         )
         checks.append(
             Check(
