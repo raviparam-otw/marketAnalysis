@@ -161,7 +161,7 @@ lines = text.splitlines()
 updates = {
     "MODEL_C_ENABLED": "true",
     "MODEL_C_EXECUTION_ENABLED": "true",
-    "MODEL_C_REQUIRE_FULL_STACK": "true",
+    "MODEL_C_REQUIRE_FULL_STACK": "false",
     "MODEL_C_LLM_BASE_URL": os.environ["MODEL_C_BASE_URL"],
     "MODEL_C_LLM_MODEL": os.environ["MODEL_C_MODEL_ID"],
     "MODEL_C_LLM_API_KEY": "",
@@ -232,12 +232,12 @@ if ! PYTHONPATH=src python scripts/check_model_c_stack.py; then
   fail "Model C full-stack check failed."
 fi
 
-say "Running live three-model sample test"
+say "Running live A/C sample test"
 if ! PYTHONPATH=src python sample_test.py --live-llm; then
   echo
   echo "Last Fin-R1 server log lines:"
   tail -n 120 "$LOG_FILE" 2>/dev/null || true
-  fail "Live A/B/C sample test failed."
+  fail "Live A/C sample test failed."
 fi
 
 cat <<EOF
@@ -252,7 +252,7 @@ Server log    : $LOG_FILE
 FinBERT       : tested
 Kronos        : tested
 Fin-R1        : tested
-A/B/C sample  : tested
+A/C sample    : tested
 
 No Alpaca orders were submitted by these validation commands.
 ============================================================
