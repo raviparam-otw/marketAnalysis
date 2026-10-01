@@ -1,27 +1,26 @@
-# Alpaca Three-Model Intraday Lab
+# Alpaca A/C Intraday Lab
 
-A local, **paper-trading-only** A/B/C intraday research workstation running three independent decision styles against the same market session.
+A local, **paper-trading-only** A/C intraday research workstation running two independent decision styles against the same market session.
 
 - **Model A — CONTROL:** Opening Range / VWAP across the dynamic universe, with multi-position support and faster failed-breakout exits.
-- **Model B — CHALLENGER:** aggressive Momentum Catalyst action-day strategy.
 - **Model C — ADAPTIVE:** Fin-R1 financial reasoner + Kronos K-line forecaster + FinBERT financial sentiment, orchestrated as a cost-controlled multi-agent desk.
 
 The application is intentionally locked to Alpaca paper trading.
 
-## Session capital: automatic three-way split
+## Session capital: automatic A/C split
 
 The live engine no longer assumes a $100,000 account.
 
-When **Start Session** is pressed, the engine reads the actual Alpaca paper account equity and freezes equal A/B/C allocations for that trading day.
+When **Start Session** is pressed, the engine reads the actual Alpaca paper account equity and freezes equal A/C allocations for that trading day.
 
-- $100,000 equity → A $33,333.33 / B $33,333.33 / C $33,333.34
-- $83,421.17 equity → A $27,807.06 / B $27,807.06 / C $27,807.05
+- $100,000 equity → A $50,000 / C $50,000
+- $83,421.17 equity → A $41,710.59 / C $41,710.58
 
-The allocation is frozen for the trading day so one model's P&L cannot silently change another model's starting capital. Legacy same-day A/B sessions remain readable and are not retroactively re-split.
+The allocation is frozen for the trading day so one model's P&L cannot silently change another model's starting capital. Legacy same-day sessions are migrated to A/C only when the paper account is flat.
 
 ## Risk scales with the account
 
-Live risk controls scale from each model's frozen allocation. Model A stays controlled, Model B uses the aggressive PAPER action-day profile, and Model C uses its own adaptive risk profile. Combined action-day gross exposure is capped at 80% of account starting equity by default. All three remain subject to cash, per-model exposure, open-position, trade-count, consecutive-loss, and daily-loss controls.
+Live risk controls scale from each model's frozen allocation. Model A stays controlled and Model C uses its adaptive risk profile. Combined gross exposure is capped at 80% of account starting equity by default. Both models remain subject to cash, per-model exposure, open-position, trade-count, consecutive-loss, and daily-loss controls.
 
 A trade is also capped by actual Alpaca cash and remaining global exposure room.
 
@@ -52,7 +51,7 @@ Market universe
 
 The LLM cannot invent a ticker: a Fin-R1 BUY is accepted only when its symbol exists in the engine-generated shortlist. It must also exceed `MODEL_C_MIN_CONFIDENCE`. Position sizing, model/account exposure, actual-fill risk rebasing, exit management, daily loss limits, and emergency flattening remain deterministic and outside the LLM.
 
-With `MODEL_C_REQUIRE_FULL_STACK=true` (the default), Model C will **not** submit a PAPER entry if Fin-R1, FinBERT, or Kronos is unavailable.
+Fin-R1 is the primary Model C decision engine. FinBERT and Kronos enrich its evidence when available; if either auxiliary component is unavailable, Model C logs the degradation and continues with Fin-R1.
 
 ### One-command local setup + test
 
@@ -127,7 +126,7 @@ RESULT: MODEL C FULL STACK READY
 
 The top bar is designed around safe experiment operation:
 
-- **Start Session** — freezes the day's account equity and equal A/B/C model allocations, then starts all three models.
+- **Start Session** — freezes the day's account equity and equal A/C model allocations, then starts both models.
 - **Pause Entries** — blocks new entries while continuing to manage existing positions and exits.
 - **Resume** — re-enables entries.
 - **Drain & Stop** — takes no new positions and keeps managing existing positions until the experiment is flat, then stops.
@@ -143,13 +142,13 @@ All pages use the same frozen session baseline and risk ledger.
 - live Alpaca account equity
 - frozen session start equity
 - account session P&L
-- Model A / Model B / Model C allocations
+- Model A / Model C allocations
 - gross exposure and exposure limit
 - entry-window state
 - engine/cycle health
 - both model dashboards side by side
 
-**Model A / Model B / Model C**
+**Model A / Model C**
 - allocation and model equity
 - realized + unrealized P&L
 - session return and drawdown
@@ -167,19 +166,19 @@ All pages use the same frozen session baseline and risk ledger.
 
 ## Restart protection
 
-A daily session snapshot is written under `trade-data/`. The engine can recover attributable Model A/B/C positions from the journal after a process restart. If it sees a position that cannot be safely attributed to the experiment, Start Session is blocked instead of guessing.
+A daily session snapshot is written under `trade-data/`. The engine can recover attributable Model A/C positions from the journal after a process restart. If it sees a position that cannot be safely attributed to the experiment, Start Session is blocked instead of guessing.
 
 ## Local sample-data test
 
-A checked-in synthetic fixture lets you exercise **all three models locally without Alpaca connectivity or order submission**.
+A checked-in synthetic fixture lets you exercise **Models A and C locally without Alpaca connectivity or order submission**.
 
 Files:
 
-- `sample-data/market-bars.csv` — deterministic 1-minute bars for ALPHA (Model A), BETA (Model B), GAMMA (Model C), plus SPY and QQQ.
+- `sample-data/market-bars.csv` — deterministic 1-minute bars used by Model A and Model C, plus SPY and QQQ.
 - `sample-data/news.json` — synthetic catalysts for the momentum and LLM paths.
 - `sample-data/model-c-responses.json` — deterministic Fin-R1 analyst-committee and portfolio-manager responses.
 - `sample-data/model-c-intelligence.json` — deterministic FinBERT sentiment and Kronos forecast evidence.
-- `sample_test.py` — loads the fixture, runs A/B/C, applies each model's risk sizing, and submits **no orders**.
+- `sample_test.py` — loads the fixture, runs A/C, applies each model's risk sizing, and submits **no orders**.
 
 Run the complete offline sample:
 
@@ -194,7 +193,6 @@ Expected ending:
 
 ```text
 [PASS] Model A
-[PASS] Model B
 [PASS] Model C
 RESULT: READY
 ```
@@ -220,10 +218,9 @@ The validator is order-free. It checks:
 
 - module imports
 - paper-only safety lock
-- dynamic three-way allocation
+- dynamic A/C allocation
 - percentage-scaled risk sizing
 - Model A signal pipeline
-- Model B momentum/catalyst pipeline
 - actual-fill P&L
 - complete pytest suite
 
@@ -255,7 +252,6 @@ Open `http://127.0.0.1:8000`.
 - Model allocations are virtual ledgers inside one Alpaca paper account.
 - The current engine is polling-based; a full market/order WebSocket execution layer is still a future upgrade.
 - Model C requires the local Fin-R1 endpoint plus FinBERT and Kronos when full-stack mode is enabled.
-- Model B's RVOL remains a short-term bar measure; same-time-of-day multi-session RVOL is still planned.
 - Float filtering and full Level 2/order-book confirmation require a separate reliable provider.
 - Stops are application-managed today, so the process must remain available while positions are open.
 - Paper fills do not reproduce all live-market slippage, queue position, spread, latency, halts, or market impact.
