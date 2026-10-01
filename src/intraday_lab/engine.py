@@ -1052,7 +1052,36 @@ class TradingEngine:
                 for model in self.models.values():
                     model.log("WARN", "Order-status sync failed", order_id=order_id, error=str(exc))
 
-        summary = self.journal.status().get("summary", {}).get("models", {})
+        journal_status = self.journal.status()
+        summary = journal_status.get("summary", {}).get("models", {})
+
+        # Rebuild Model A's per-symbol entry/cooldown state from filled journal
+        # records so a process restart cannot bypass the re-entry controls.
+        model_a = self.models.get("A")
+        if model_a is not None:
+            entries_by_symbol: dict[str, int] = {}
+            last_exit_at: dict[str, datetime] = {}
+            for row in journal_status.get("trades", []):
+                if row.get("model") != "A" or row.get("status") != "filled":
+                    continue
+                symbol = str(row.get("symbol", "")).upper()
+                if not symbol:
+                    continue
+                side = str(row.get("side", "")).upper()
+                if side == "BUY":
+                    entries_by_symbol[symbol] = entries_by_symbol.get(symbol, 0) + 1
+                elif side == "SELL":
+                    raw = row.get("filled_at") or row.get("recorded_at")
+                    try:
+                        closed_at = datetime.fromisoformat(str(raw))
+                        if closed_at.tzinfo is None:
+                            closed_at = closed_at.replace(tzinfo=EASTERN)
+                        last_exit_at[symbol] = closed_at.astimezone(EASTERN)
+                    except Exception:
+                        pass
+            model_a.entries_by_symbol = entries_by_symbol
+            model_a.last_exit_at = last_exit_at
+
         for name, model in self.models.items():
             stats = summary.get(name, {})
             model.realized_pl = float(stats.get("realized_pl", 0.0) or 0.0)
