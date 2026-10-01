@@ -160,7 +160,7 @@ button:disabled{opacity:.42;cursor:not-allowed}
 }
 .compare-grid,.trade-grid{
   display:grid;
-  grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-template-columns:repeat(2,minmax(0,1fr));
   gap:8px;
   align-items:stretch
 }
@@ -391,7 +391,7 @@ tbody tr:hover{background:#f8fbfe}
 
 .trade-summary-grid{
   display:grid;
-  grid-template-columns:repeat(3,1fr);
+  grid-template-columns:repeat(2,1fr);
   gap:8px;
   margin-bottom:8px
 }
