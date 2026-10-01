@@ -36,6 +36,8 @@ class ModelRuntime:
         self.peak_equity = 0.0
         self.last_scan_log_at: datetime | None = None
         self.last_decision_at: datetime | None = None
+        self.entries_by_symbol: dict[str, int] = {}
+        self.last_exit_at: dict[str, datetime] = {}
 
     @property
     def capital(self) -> float:
@@ -97,6 +99,7 @@ class TradingEngine:
                     confirmation_bars=config.model_a_confirmation_bars,
                     max_extension_from_or_pct=config.model_a_max_extension_from_or_pct,
                     max_extension_from_vwap_pct=config.model_a_max_extension_from_vwap_pct,
+                    max_bar_age_seconds=config.model_a_max_bar_age_seconds,
                 ),
                 RiskManager(config, "A"),
             ),
@@ -444,12 +447,24 @@ class TradingEngine:
 
         account = await asyncio.to_thread(self.broker.account_snapshot)
         positions = await asyncio.to_thread(self.broker.positions)
+
+        guard_symbols = list({
+            symbol
+            for model in self.models.values()
+            for symbol in model.guards
+        })
+        guard_bars = (
+            await asyncio.to_thread(self.broker.minute_bars, guard_symbols, 1)
+            if guard_symbols
+            else {}
+        )
+
         self.last_account = account
         self.last_positions = positions
         position_map = {str(position.symbol).upper(): position for position in positions}
 
         for model in self.models.values():
-            await self._manage_model_position(model, position_map, now)
+            await self._manage_model_position(model, position_map, now, guard_bars)
 
         # A guard remains until Alpaca no longer reports the position.
         for model in self.models.values():
@@ -457,6 +472,8 @@ class TradingEngine:
                 position = position_map.get(symbol)
                 if position is None and guard.exit_pending:
                     model.guards.pop(symbol, None)
+                    if model.name == "A":
+                        model.last_exit_at[symbol] = now
                     model.log("TRADE", "Position confirmed closed", symbol=symbol)
 
         self._refresh_model_marks(position_map)
@@ -526,6 +543,17 @@ class TradingEngine:
                 for symbol in self.universe:
                     if symbol in locked:
                         continue
+                    if model.name == "A":
+                        if model.entries_by_symbol.get(symbol, 0) >= self.config.model_a_max_entries_per_symbol:
+                            rejection_counts["symbol entry cap"] = rejection_counts.get("symbol entry cap", 0) + 1
+                            continue
+                        last_exit = model.last_exit_at.get(symbol)
+                        if (
+                            last_exit is not None
+                            and now - last_exit < timedelta(minutes=self.config.model_a_reentry_cooldown_minutes)
+                        ):
+                            rejection_counts["reentry cooldown"] = rejection_counts.get("reentry cooldown", 0) + 1
+                            continue
                     catalyst = self.news.catalyst_for(symbol) if model.name == "B" else None
                     signal = model.strategy.evaluate(
                         symbol,
@@ -570,13 +598,78 @@ class TradingEngine:
                 if candidate.symbol in locked:
                     continue
 
+                execution_price = candidate.price
+                execution_context = {}
+                if model.name == "A":
+                    try:
+                        quote = await asyncio.to_thread(self.broker.latest_quote, candidate.symbol)
+                    except Exception as exc:
+                        model.log("DATA", "Entry rejected: quote lookup failed", symbol=candidate.symbol, error=str(exc))
+                        continue
+
+                    bid = float(quote.get("bid", 0.0) or 0.0)
+                    ask = float(quote.get("ask", 0.0) or 0.0)
+                    spread_pct = quote.get("spread_pct")
+                    timestamp = quote.get("timestamp")
+                    if bid <= 0 or ask <= bid or spread_pct is None:
+                        model.log("DATA", "Entry rejected: invalid quote", symbol=candidate.symbol)
+                        continue
+
+                    quote_age_seconds = 0.0
+                    if timestamp is not None:
+                        quote_time = timestamp
+                        if quote_time.tzinfo is None:
+                            quote_time = quote_time.replace(tzinfo=EASTERN)
+                        quote_age_seconds = max(
+                            0.0,
+                            (now.astimezone(quote_time.tzinfo) - quote_time).total_seconds(),
+                        )
+                    if quote_age_seconds > self.config.model_a_quote_max_age_seconds:
+                        model.log(
+                            "DATA",
+                            "Entry rejected: stale quote",
+                            symbol=candidate.symbol,
+                            quote_age_seconds=round(quote_age_seconds, 3),
+                        )
+                        continue
+                    if float(spread_pct) > self.config.model_a_max_entry_spread_pct:
+                        model.log(
+                            "DATA",
+                            "Entry rejected: spread too wide",
+                            symbol=candidate.symbol,
+                            spread_pct=round(float(spread_pct) * 100, 3),
+                        )
+                        continue
+                    max_ask = candidate.price * (1 + self.config.model_a_max_entry_slippage_pct)
+                    if ask > max_ask:
+                        model.log(
+                            "DATA",
+                            "Entry rejected: price moved beyond slippage cap",
+                            symbol=candidate.symbol,
+                            signal_price=round(candidate.price, 4),
+                            ask=round(ask, 4),
+                            max_ask=round(max_ask, 4),
+                        )
+                        continue
+
+                    execution_price = ask
+                    execution_context = {
+                        "entry_quote": {
+                            "bid": bid,
+                            "ask": ask,
+                            "spread_pct": float(spread_pct),
+                            "quote_age_seconds": quote_age_seconds,
+                            "feed": quote.get("feed"),
+                        }
+                    }
+
                 model_exposure = sum(
                     guard.quantity * (guard.current_price or guard.entry_price)
                     for guard in model.guards.values()
                 )
                 model_room = max(0.0, model.risk.max_exposure - model_exposure)
                 check = model.risk.entry_check(
-                    candidate.price,
+                    execution_price,
                     candidate.stop_price,
                     False,
                     now,
@@ -598,7 +691,7 @@ class TradingEngine:
                 )
 
                 profile = model.risk.profile
-                context = candidate.to_dict() | {
+                context = candidate.to_dict() | execution_context | {
                     "risk_dollars": round(check.dollars_at_risk, 2),
                     "planned_notional": round(check.notional, 2),
                     "session_allocation": round(model.capital, 2),
@@ -623,13 +716,15 @@ class TradingEngine:
                     model=model.name,
                     symbol=candidate.symbol,
                     trade_id=trade_id,
-                    entry_price=candidate.price,
+                    entry_price=execution_price,
                     quantity=check.quantity,
                     high_watermark=candidate.price,
                     stop_price=candidate.stop_price,
                     entered_at=now,
-                    current_price=candidate.price,
+                    current_price=execution_price,
                 )
+                if model.name == "A":
+                    model.entries_by_symbol[candidate.symbol] = model.entries_by_symbol.get(candidate.symbol, 0) + 1
                 locked.add(candidate.symbol)
                 available_cash = max(0.0, available_cash - check.notional)
                 global_room = max(0.0, global_room - check.notional)
@@ -852,6 +947,7 @@ class TradingEngine:
         model: ModelRuntime,
         position_map: dict,
         now: datetime,
+        bars_by_symbol: dict | None = None,
     ) -> None:
         for symbol, guard in list(model.guards.items()):
             position = position_map.get(symbol)
@@ -863,7 +959,11 @@ class TradingEngine:
             guard.entry_price = entry
             guard.current_price = current
             guard.unrealized_pl = float(position.unrealized_pl)
-            guard.high_watermark = max(guard.high_watermark, current)
+            observed_high = current
+            frame = (bars_by_symbol or {}).get(symbol)
+            if frame is not None and not frame.empty and "high" in frame:
+                observed_high = max(observed_high, float(frame.tail(2)["high"].max()))
+            guard.high_watermark = max(guard.high_watermark, observed_high)
 
             # Rebase the stop once the broker provides the actual fill so slippage at entry
             # cannot silently increase the intended dollar risk.
@@ -1001,15 +1101,38 @@ class TradingEngine:
 
     @staticmethod
     def _market_alignment(bars: dict) -> bool:
+        aligned = 0
+        observed = 0
         for benchmark in ("SPY", "QQQ"):
             frame = bars.get(benchmark)
-            if (
-                frame is not None
-                and len(frame) >= 2
-                and float(frame.iloc[-1]["close"]) > float(frame.iloc[-2]["close"])
-            ):
-                return True
-        return False
+            if frame is None or len(frame) < 6:
+                continue
+
+            recent = frame.copy().sort_index()
+            index = recent.index
+            try:
+                if index.tz is None:
+                    index = index.tz_localize("UTC")
+                recent.index = index.tz_convert(EASTERN)
+                today = datetime.now(EASTERN).date()
+                recent = recent[recent.index.date == today]
+            except Exception:
+                pass
+
+            recent = recent.tail(30)
+            if len(recent) < 6:
+                continue
+
+            observed += 1
+            typical = (recent["high"] + recent["low"] + recent["close"]) / 3
+            cumulative_volume = recent["volume"].cumsum().replace(0, float("nan"))
+            vwap = float(((typical * recent["volume"]).cumsum() / cumulative_volume).iloc[-1])
+            current = float(recent.iloc[-1]["close"])
+            five_minute_reference = float(recent.iloc[-6]["close"])
+            if current > vwap and current > five_minute_reference:
+                aligned += 1
+
+        return observed > 0 and aligned >= 1
 
     @staticmethod
     def _empty_frame():
