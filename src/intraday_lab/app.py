@@ -29,7 +29,7 @@ async def lifespan(_: FastAPI):
         engine.last_account = engine.broker.account_snapshot()
         engine.last_positions = engine.broker.positions()
         open_orders = engine.broker.open_orders()
-        engine.upgrade_legacy_session_if_flat(
+        engine.upgrade_session_if_flat(
             account=engine.last_account,
             positions=engine.last_positions,
             open_orders=open_orders,
@@ -42,7 +42,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Alpaca Three-Model Intraday Lab",
+    title="Alpaca A/C Intraday Lab",
     version="0.4.0",
     lifespan=lifespan,
 )
@@ -74,7 +74,7 @@ async def dashboard(request: Request):
 @app.get("/model/{model}", response_class=HTMLResponse)
 async def model_page(request: Request, model: str):
     model = model.upper()
-    if model not in {"A", "B", "C"}:
+    if model not in {"A", "C"}:
         raise HTTPException(status_code=404, detail="Unknown model")
     return templates.TemplateResponse(
         request=request,
