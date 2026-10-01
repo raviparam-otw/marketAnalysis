@@ -9,8 +9,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import AssetClass, AssetStatus, OrderSide, TimeInForce
-from alpaca.trading.requests import GetAssetsRequest, MarketOrderRequest
+from alpaca.trading.enums import AssetClass, AssetStatus, OrderClass, OrderSide, TimeInForce
+from alpaca.trading.requests import GetAssetsRequest, GetOrderByIdRequest, LimitOrderRequest, MarketOrderRequest, StopLossRequest
 
 from .config import Settings
 from .universe import asset_is_eligible, rank_candidates, snapshot_candidate
@@ -130,6 +130,46 @@ class PaperBroker:
             "spread_pct": spread_pct,
             "feed": self.config.market_data_feed,
         }
+
+    @staticmethod
+    def _equity_price(price: float) -> float:
+        return round(float(price), 2) if float(price) >= 1 else round(float(price), 4)
+
+    def buy_protected_limit_qty(
+        self,
+        symbol: str,
+        qty: float,
+        limit_price: float,
+        stop_price: float,
+        client_order_id: str,
+    ):
+        entry_limit = self._equity_price(limit_price)
+        protective_stop = self._equity_price(stop_price)
+        if protective_stop >= entry_limit:
+            tick = 0.01 if entry_limit >= 1 else 0.0001
+            protective_stop = self._equity_price(max(tick, entry_limit - tick))
+
+        return self.trading.submit_order(
+            order_data=LimitOrderRequest(
+                symbol=symbol,
+                qty=round(qty, 6),
+                limit_price=entry_limit,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
+                order_class=OrderClass.OTO,
+                stop_loss=StopLossRequest(stop_price=protective_stop),
+            )
+        )
+
+    def order_nested(self, order_id: str):
+        return self.trading.get_order_by_id(
+            UUID(str(order_id)),
+            GetOrderByIdRequest(nested=True),
+        )
+
+    def cancel_order(self, order_id: str) -> None:
+        self.trading.cancel_order_by_id(UUID(str(order_id)))
 
     def buy_qty(self, symbol: str, qty: float, client_order_id: str):
         return self.trading.submit_order(
