@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
 from .models import Decision, Signal
@@ -93,7 +93,7 @@ class OpeningRangeVwapStrategy:
 
         opening = session.between_time("09:30", "09:44")
         expected_opening_minutes = {
-            (datetime.combine(now.date(), time(9, 30), tzinfo=EASTERN) + pd.Timedelta(minutes=i)).time()
+            (datetime.combine(now.date(), time(9, 30), tzinfo=EASTERN) + timedelta(minutes=i)).time()
             for i in range(15)
         }
         observed_opening_minutes = {stamp.time().replace(tzinfo=None) for stamp in opening.index}
