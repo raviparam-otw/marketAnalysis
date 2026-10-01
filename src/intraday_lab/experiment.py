@@ -31,7 +31,7 @@ class ExperimentSession:
 
 
 class ExperimentSessionStore:
-    """Crash-safe session snapshot. One A/B/C allocation is frozen per trading day."""
+    """Crash-safe session snapshot. One A/C allocation is frozen per trading day."""
 
     def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory)
@@ -48,16 +48,14 @@ class ExperimentSessionStore:
             return ExperimentSession(**json.load(handle))
 
     @staticmethod
-    def three_way_allocations(starting_equity: float) -> tuple[float, dict[str, float]]:
+    def two_way_allocations(starting_equity: float) -> tuple[float, dict[str, float]]:
         if starting_equity <= 0:
             raise ValueError("Cannot start an experiment with non-positive account equity.")
         total = Decimal(str(starting_equity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocation_a = (total / Decimal("3")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocation_b = (total / Decimal("3")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocation_c = total - allocation_a - allocation_b
+        allocation_a = (total / Decimal("2")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        allocation_c = total - allocation_a
         return float(total), {
             "A": float(allocation_a),
-            "B": float(allocation_b),
             "C": float(allocation_c),
         }
 
@@ -66,7 +64,7 @@ class ExperimentSessionStore:
         existing = self.load_today(current)
         if existing:
             return existing
-        total, allocations = self.three_way_allocations(starting_equity)
+        total, allocations = self.two_way_allocations(starting_equity)
         session = ExperimentSession(
             session_id=f"{current.strftime('%Y%m%d')}-{uuid4().hex[:10]}",
             trading_date=current.date().isoformat(),
@@ -79,25 +77,21 @@ class ExperimentSessionStore:
         self.save(session, current)
         return session
 
-    def replace_legacy_with_three_way(
+    def replace_with_two_way(
         self,
         starting_equity: float,
         now: datetime | None = None,
     ) -> ExperimentSession:
-        """Replace a flat legacy A/B session with a fresh A/B/C split.
-
-        The previous session snapshot is preserved once as a .legacy-ab.json
-        file so the old allocation can still be inspected later.
-        """
+        """Replace a flat legacy session with a fresh A/C split."""
         current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         path = self._path(current)
         if path.exists():
-            backup = path.with_name(path.stem + ".legacy-ab.json")
+            backup = path.with_name(path.stem + ".legacy.json")
             if not backup.exists():
                 self.directory.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, backup)
 
-        total, allocations = self.three_way_allocations(starting_equity)
+        total, allocations = self.two_way_allocations(starting_equity)
         session = ExperimentSession(
             session_id=f"{current.strftime('%Y%m%d')}-{uuid4().hex[:10]}",
             trading_date=current.date().isoformat(),
