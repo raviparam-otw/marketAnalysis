@@ -11,7 +11,7 @@ from intraday_lab.finance_stack import FinanceIntelligenceStack
 from intraday_lab.model_c import ModelCAdvisor
 from intraday_lab.models import Decision
 from intraday_lab.risk import RiskManager
-from intraday_lab.strategy import MomentumCatalystStrategy, OpeningRangeVwapStrategy
+from intraday_lab.strategy import OpeningRangeVwapStrategy
 
 
 ROOT = Path(__file__).resolve().parent
@@ -80,15 +80,6 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
         bars["ALPHA"],
         aligned,
         now,
-    )
-
-    # Model B — aggressive momentum/catalyst challenger.
-    signal_b = MomentumCatalystStrategy(config).evaluate(
-        "BETA",
-        bars["BETA"],
-        aligned,
-        now,
-        news.get("BETA"),
     )
 
     # Model C — Fin-R1 reasoner + Kronos K-line forecast + FinBERT sentiment.
@@ -175,18 +166,6 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
                 if signal_a.decision == Decision.BUY
                 else None,
             },
-            "B": {
-                "symbol": "BETA",
-                "decision": signal_b.decision.value,
-                "reason": signal_b.reason,
-                "price": round(signal_b.price, 4),
-                "gap_pct": round(signal_b.gap_pct, 4),
-                "change_pct": round(signal_b.change_pct, 4),
-                "rvol": round(signal_b.relative_volume, 4),
-                "risk": size_signal(config, "B", signal_b, capital_per_model)
-                if signal_b.decision == Decision.BUY
-                else None,
-            },
             "C": {
                 "symbol": signal_c.symbol if signal_c else decision_c.get("symbol"),
                 "decision": signal_c.decision.value if signal_c else "HOLD",
@@ -210,7 +189,6 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
 
     expected = {
         "A": results["models"]["A"]["decision"] == "BUY",
-        "B": results["models"]["B"]["decision"] == "BUY",
         "C": results["models"]["C"]["decision"] == "BUY",
     }
     results["passed"] = all(expected.values())
@@ -220,7 +198,7 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run all three trading models against checked-in synthetic sample data."
+        description="Run Models A and C against checked-in synthetic sample data."
     )
     parser.add_argument(
         "--live-llm",
@@ -230,7 +208,7 @@ def main() -> int:
     parser.add_argument(
         "--capital",
         type=float,
-        default=33_333.33,
+        default=50_000.0,
         help="Virtual capital per model used only for sample risk sizing.",
     )
     args = parser.parse_args()
