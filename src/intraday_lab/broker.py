@@ -6,7 +6,7 @@ from uuid import UUID
 import pandas as pd
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import AssetClass, AssetStatus, OrderSide, TimeInForce
@@ -23,6 +23,7 @@ class PaperBroker:
         # Literal True is intentional. Live trading cannot be enabled through configuration.
         self.trading = TradingClient(config.api_key, config.secret_key, paper=True)
         self.data = StockHistoricalDataClient(config.api_key, config.secret_key)
+        self.data_feed = DataFeed.SIP if config.market_data_feed == "sip" else DataFeed.IEX
 
     def account_snapshot(self) -> dict:
         account = self.trading.get_account()
@@ -59,7 +60,7 @@ class PaperBroker:
                 for asset in eligible[offset : offset + self.config.snapshot_batch_size]
             ]
             snapshots = self.data.get_stock_snapshot(
-                StockSnapshotRequest(symbol_or_symbols=symbols, feed=DataFeed.IEX)
+                StockSnapshotRequest(symbol_or_symbols=symbols, feed=self.data_feed)
             )
             for symbol, snapshot in snapshots.items():
                 candidate = snapshot_candidate(
@@ -93,7 +94,7 @@ class PaperBroker:
                     timeframe=TimeFrame.Minute,
                     start=start,
                     end=end,
-                    feed=DataFeed.IEX,
+                    feed=self.data_feed,
                     limit=10_000,
                 )
             ).df
@@ -107,6 +108,28 @@ class PaperBroker:
             elif len(batch) == 1:
                 result[batch[0]] = bars.copy()
         return result
+
+    def latest_quote(self, symbol: str) -> dict:
+        quotes = self.data.get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=[symbol], feed=self.data_feed)
+        )
+        quote = quotes.get(symbol)
+        if quote is None:
+            return {}
+        bid = float(getattr(quote, "bid_price", 0) or 0)
+        ask = float(getattr(quote, "ask_price", 0) or 0)
+        midpoint = ((bid + ask) / 2) if bid > 0 and ask > 0 else 0.0
+        spread_pct = ((ask - bid) / midpoint) if midpoint > 0 and ask >= bid else None
+        return {
+            "symbol": symbol,
+            "bid": bid,
+            "ask": ask,
+            "bid_size": float(getattr(quote, "bid_size", 0) or 0),
+            "ask_size": float(getattr(quote, "ask_size", 0) or 0),
+            "timestamp": getattr(quote, "timestamp", None),
+            "spread_pct": spread_pct,
+            "feed": self.config.market_data_feed,
+        }
 
     def buy_qty(self, symbol: str, qty: float, client_order_id: str):
         return self.trading.submit_order(
