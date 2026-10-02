@@ -56,7 +56,7 @@ def test_signal_requires_confidence_and_valid_shortlist_symbol():
     )
     shortlist = [candidate]
 
-    low = advisor.signal_from_decision(
+    low, low_rejections = advisor.signal_from_decision(
         shortlist,
         {"decision": "BUY", "symbol": "TEST", "confidence": 0.40, "stop_pct": 0.01},
         now=NOW,
@@ -64,8 +64,9 @@ def test_signal_requires_confidence_and_valid_shortlist_symbol():
         min_confidence=0.68,
     )
     assert low is None
+    assert low_rejections
 
-    signal = advisor.signal_from_decision(
+    signal, rejections = advisor.signal_from_decision(
         shortlist,
         {
             "decision": "BUY",
@@ -82,18 +83,21 @@ def test_signal_requires_confidence_and_valid_shortlist_symbol():
     assert signal.symbol == "TEST"
     assert signal.setup == "llm_multi_agent"
     assert signal.stop_price < signal.price
+    assert rejections == []
 
 
 def test_invalid_symbol_is_never_executed():
     advisor = ModelCAdvisor("", "")
     candidate = advisor.build_candidate("TEST", bars(), now=NOW, catalyst=None, market_aligned=True)
-    assert advisor.signal_from_decision(
+    signal, rejections = advisor.signal_from_decision(
         [candidate],
         {"decision": "BUY", "symbol": "MADEUP", "confidence": 0.99},
         now=NOW,
         market_aligned=True,
         min_confidence=0.68,
-    ) is None
+    )
+    assert signal is None
+    assert "symbol not in shortlist" in rejections
 
 
 def test_fin_r1_think_answer_wrapper_json_is_extracted():
@@ -101,3 +105,46 @@ def test_fin_r1_think_answer_wrapper_json_is_extracted():
     parsed = __import__("json").loads(_clean_json_text(raw))
     assert parsed["decision"] == "HOLD"
     assert parsed["confidence"] == 0.73
+
+
+def test_validator_rejects_llm_buy_when_raw_momentum_is_weak():
+    advisor = ModelCAdvisor("", "")
+    candidate = {
+        "symbol": "WEAK",
+        "price": 99.0,
+        "vwap": 100.0,
+        "above_vwap": False,
+        "gap_pct": 4.0,
+        "change_pct": 8.0,
+        "relative_volume": 0.70,
+        "hod": 102.0,
+        "lod": 96.0,
+        "distance_hod_pct": -2.94,
+        "range_pct": 6.06,
+        "return_1m_pct": 0.25,
+        "return_5m_pct": -0.80,
+        "return_15m_pct": -1.20,
+        "market_aligned": False,
+        "catalyst": False,
+        "catalyst_headline": None,
+        "pre_score": 20.0,
+    }
+    signal, rejections = advisor.signal_from_decision(
+        [candidate],
+        {
+            "decision": "BUY",
+            "symbol": "WEAK",
+            "confidence": 0.90,
+            "stop_pct": 0.01,
+            "rationale": "Model claims strong momentum.",
+        },
+        now=NOW,
+        market_aligned=False,
+        min_confidence=0.70,
+        min_rvol=1.25,
+        require_positive_1m=True,
+        require_vwap_or_positive_5m=True,
+    )
+    assert signal is None
+    assert any("RVOL" in reason for reason in rejections)
+    assert any("below VWAP" in reason for reason in rejections)
