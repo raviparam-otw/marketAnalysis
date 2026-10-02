@@ -2,8 +2,8 @@
 
 A local, **paper-trading-only** A/C intraday research workstation running two independent decision styles against the same market session.
 
-- **Model A — CONTROL:** Opening Range / VWAP across the dynamic universe, with multi-position support and faster failed-breakout exits.
-- **Model C — ADAPTIVE:** Fin-R1 financial reasoner + Kronos K-line forecaster + FinBERT financial sentiment, orchestrated as a cost-controlled multi-agent desk.
+- **Model A — AGGRESSIVE RULES:** fast Opening Range / VWAP momentum across the dynamic universe, with one-bar confirmation, multi-position support, faster re-entry, and deterministic exits.
+- **Model C — AGGRESSIVE AI:** Fin-R1 financial reasoner + Kronos K-line forecaster + FinBERT financial sentiment, followed by a deterministic market-fact execution validator.
 
 The application is intentionally locked to Alpaca paper trading.
 
@@ -20,7 +20,7 @@ The allocation is frozen for the trading day so one model's P&L cannot silently 
 
 ## Risk scales with the account
 
-Live risk controls scale from each model's frozen allocation. Model A stays controlled and Model C uses its adaptive risk profile. Combined gross exposure is capped at 80% of account starting equity by default. Both models remain subject to cash, per-model exposure, open-position, trade-count, consecutive-loss, and daily-loss controls.
+Live risk controls scale from each model's frozen allocation. Both models run aggressive paper-trading profiles, but Model A stays deterministic while Model C uses adaptive AI reasoning. Combined gross exposure is capped at 80% of account starting equity by default. Both models remain subject to cash, per-model exposure, open-position, trade-count, consecutive-loss, and daily-loss controls.
 
 A trade is also capped by actual Alpaca cash and remaining global exposure room.
 
@@ -45,11 +45,12 @@ Market universe
   -> Fin-R1 analyst committee
   -> Fin-R1 portfolio/risk manager
   -> confidence gate
+  -> deterministic market-fact validator
   -> deterministic position sizing/risk engine
   -> Alpaca PAPER order
 ```
 
-The LLM cannot invent a ticker: a Fin-R1 BUY is accepted only when its symbol exists in the engine-generated shortlist. It must also exceed `MODEL_C_MIN_CONFIDENCE`. Position sizing, model/account exposure, actual-fill risk rebasing, exit management, daily loss limits, and emergency flattening remain deterministic and outside the LLM.
+The LLM cannot invent a ticker: a Fin-R1 BUY is accepted only when its symbol exists in the engine-generated shortlist and exceeds `MODEL_C_MIN_CONFIDENCE`. Before execution, raw market data is re-checked for minimum RVOL, positive 1-minute momentum, VWAP-or-positive-5-minute structure, HOD distance, and excessive VWAP extension. A contradictory LLM narrative cannot override those facts. Position sizing, model/account exposure, actual-fill risk rebasing, exit management, daily loss limits, and emergency flattening remain deterministic and outside the LLM.
 
 Fin-R1 is the primary Model C decision engine. FinBERT and Kronos enrich its evidence when available; if either auxiliary component is unavailable, Model C logs the degradation and continues with Fin-R1.
 
