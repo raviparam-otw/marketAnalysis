@@ -677,11 +677,22 @@ class TradingEngine:
 
                 trade_id = f"{model.name}-{uuid4().hex[:12]}"
                 client_order_id = f"model-{model.name.lower()}-{trade_id.lower()}"
+                order_qty = int(float(check.quantity)) if model.name == "A" else check.quantity
+                if order_qty <= 0:
+                    model.log(
+                        "RISK",
+                        "Entry rejected",
+                        reason="protected order requires at least 1 whole share",
+                        symbol=candidate.symbol,
+                        calculated_qty=check.quantity,
+                    )
+                    continue
+
                 if model.name == "A":
                     order = await asyncio.to_thread(
                         self.broker.buy_protected_limit_qty,
                         candidate.symbol,
-                        check.quantity,
+                        order_qty,
                         execution_price,
                         candidate.stop_price,
                         client_order_id,
@@ -690,14 +701,16 @@ class TradingEngine:
                     order = await asyncio.to_thread(
                         self.broker.buy_qty,
                         candidate.symbol,
-                        check.quantity,
+                        order_qty,
                         client_order_id,
                     )
 
+                actual_notional = float(order_qty) * execution_price
+                actual_risk_dollars = float(order_qty) * max(0.0, execution_price - candidate.stop_price)
                 profile = model.risk.profile
                 context = candidate.to_dict() | execution_context | {
-                    "risk_dollars": round(check.dollars_at_risk, 2),
-                    "planned_notional": round(check.notional, 2),
+                    "risk_dollars": round(actual_risk_dollars, 2),
+                    "planned_notional": round(actual_notional, 2),
                     "session_allocation": round(model.capital, 2),
                     "risk_per_trade_pct": float(profile["risk_per_trade_pct"]),
                     "model_max_exposure": model.risk.max_exposure,
@@ -711,7 +724,7 @@ class TradingEngine:
                     reason=candidate.reason,
                     trade_id=trade_id,
                     session_id=self.session.session_id if self.session else None,
-                    requested_qty=check.quantity,
+                    requested_qty=order_qty,
                     signal_price=candidate.price,
                     signal_context=context,
                 )
@@ -721,7 +734,7 @@ class TradingEngine:
                     symbol=candidate.symbol,
                     trade_id=trade_id,
                     entry_price=execution_price,
-                    quantity=check.quantity,
+                    quantity=order_qty,
                     high_watermark=candidate.price,
                     stop_price=candidate.stop_price,
                     entered_at=now,
@@ -731,8 +744,8 @@ class TradingEngine:
                 if model.name == "A":
                     model.entries_by_symbol[candidate.symbol] = model.entries_by_symbol.get(candidate.symbol, 0) + 1
                 locked.add(candidate.symbol)
-                available_cash = max(0.0, available_cash - check.notional)
-                global_room = max(0.0, global_room - check.notional)
+                available_cash = max(0.0, available_cash - actual_notional)
+                global_room = max(0.0, global_room - actual_notional)
                 entries_this_cycle += 1
                 model.log(
                     "TRADE",
