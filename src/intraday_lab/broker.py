@@ -149,10 +149,17 @@ class PaperBroker:
             tick = 0.01 if entry_limit >= 1 else 0.0001
             protective_stop = self._equity_price(max(tick, entry_limit - tick))
 
+        whole_qty = int(float(qty))
+        if whole_qty < 1:
+            raise ValueError(
+                f"Protected OTO order for {symbol} requires at least 1 whole share; "
+                f"calculated qty={qty!r}."
+            )
+
         return self.trading.submit_order(
             order_data=LimitOrderRequest(
                 symbol=symbol,
-                qty=round(qty, 6),
+                qty=whole_qty,
                 limit_price=entry_limit,
                 side=OrderSide.BUY,
                 time_in_force=TimeInForce.DAY,
