@@ -43,32 +43,32 @@ class Settings:
     model_capital: float = field(default_factory=lambda: _float("MODEL_CAPITAL", 50_000))
 
     # Risk scales with each model's frozen session allocation.
-    risk_per_trade_pct: float = field(default_factory=lambda: _float("RISK_PER_TRADE_PCT", 0.005))
-    max_position_pct: float = field(default_factory=lambda: _float("MAX_POSITION_PCT", 0.25))
-    daily_loss_pct: float = field(default_factory=lambda: _float("DAILY_LOSS_PCT", 0.02))
+    risk_per_trade_pct: float = field(default_factory=lambda: _float("RISK_PER_TRADE_PCT", 0.0075))
+    max_position_pct: float = field(default_factory=lambda: _float("MAX_POSITION_PCT", 0.30))
+    daily_loss_pct: float = field(default_factory=lambda: _float("DAILY_LOSS_PCT", 0.03))
     # PAPER action-day profile: keep a global account cap, then enforce per-model caps below.
     max_account_exposure_pct: float = field(default_factory=lambda: _float("MAX_ACCOUNT_EXPOSURE_PCT", 0.80))
-    max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MAX_TRADES_PER_DAY", "6")))
-    max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MAX_CONSECUTIVE_LOSSES", "2")))
+    max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MAX_TRADES_PER_DAY", "10")))
+    max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3")))
 
-    # Model A remains the control, but can deploy several positions and cut failed
-    # breakouts faster than the shared generic stop logic.
-    model_a_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_OPEN_POSITIONS", "3")))
-    model_a_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXPOSURE_PCT", 0.65))
+    # Model A is an aggressive deterministic momentum profile that can deploy several
+    # positions while keeping execution and downside controls fully rule-based.
+    model_a_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_OPEN_POSITIONS", "4")))
+    model_a_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXPOSURE_PCT", 0.80))
     model_a_weakness_exit_pct: float = field(default_factory=lambda: _float("MODEL_A_WEAKNESS_EXIT_PCT", 0.006))
     model_a_failed_breakout_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_FAILED_BREAKOUT_MINUTES", "5")))
     model_a_failed_breakout_max_gain_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_MAX_GAIN_PCT", 0.003))
     model_a_failed_breakout_exit_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_EXIT_PCT", 0.002))
-    model_a_breakout_buffer_pct: float = field(default_factory=lambda: _float("MODEL_A_BREAKOUT_BUFFER_PCT", 0.0015))
-    model_a_confirmation_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_CONFIRMATION_BARS", "2")))
-    model_a_max_extension_from_or_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_OR_PCT", 0.06))
-    model_a_max_extension_from_vwap_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT", 0.04))
+    model_a_breakout_buffer_pct: float = field(default_factory=lambda: _float("MODEL_A_BREAKOUT_BUFFER_PCT", 0.0008))
+    model_a_confirmation_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_CONFIRMATION_BARS", "1")))
+    model_a_max_extension_from_or_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_OR_PCT", 0.08))
+    model_a_max_extension_from_vwap_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT", 0.06))
     model_a_max_bar_age_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_BAR_AGE_SECONDS", "120")))
     model_a_max_entry_spread_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_ENTRY_SPREAD_PCT", 0.01))
     model_a_max_entry_slippage_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_ENTRY_SLIPPAGE_PCT", 0.005))
     model_a_quote_max_age_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_QUOTE_MAX_AGE_SECONDS", "5")))
-    model_a_reentry_cooldown_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_REENTRY_COOLDOWN_MINUTES", "15")))
-    model_a_max_entries_per_symbol: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_ENTRIES_PER_SYMBOL", "2")))
+    model_a_reentry_cooldown_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_REENTRY_COOLDOWN_MINUTES", "8")))
+    model_a_max_entries_per_symbol: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_ENTRIES_PER_SYMBOL", "3")))
     model_a_entry_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_ENTRY_TIMEOUT_SECONDS", "20")))
 
     # Legacy absolute values remain available for the historical backtester/compatibility,
@@ -91,7 +91,7 @@ class Settings:
     stagnation_minutes: int = field(default_factory=lambda: int(os.getenv("STAGNATION_MINUTES", "45")))
     stagnation_min_gain_pct: float = field(default_factory=lambda: _float("STAGNATION_MIN_GAIN_PCT", 0.005))
 
-    relative_volume_min: float = field(default_factory=lambda: _float("RELATIVE_VOLUME_MIN", 1.5))
+    relative_volume_min: float = field(default_factory=lambda: _float("RELATIVE_VOLUME_MIN", 1.25))
     # Model C - finance-native adaptive stack.
     # Fin-R1 is the primary reasoning LLM. Kronos contributes K-line forecasts and
     # FinBERT contributes finance-specific headline sentiment.
@@ -101,9 +101,9 @@ class Settings:
     model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", ".models/Fin-R1-4bit"))
     model_c_llm_api_key: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_API_KEY", ""))
     model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "60")))
-    model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "60")))
-    model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "5")))
-    model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.68))
+    model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "30")))
+    model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "8")))
+    model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.70))
     model_c_require_full_stack: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_FULL_STACK", False))
 
     model_c_finbert_enabled: bool = field(default_factory=lambda: _bool("MODEL_C_FINBERT_ENABLED", True))
@@ -119,12 +119,17 @@ class Settings:
     model_c_kronos_lookback: int = field(default_factory=lambda: int(os.getenv("MODEL_C_KRONOS_LOOKBACK", "120")))
     model_c_kronos_pred_len: int = field(default_factory=lambda: int(os.getenv("MODEL_C_KRONOS_PRED_LEN", "5")))
     model_c_risk_per_trade_pct: float = field(default_factory=lambda: _float("MODEL_C_RISK_PER_TRADE_PCT", 0.0075))
-    model_c_max_position_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_POSITION_PCT", 0.25))
-    model_c_daily_loss_pct: float = field(default_factory=lambda: _float("MODEL_C_DAILY_LOSS_PCT", 0.03))
-    model_c_max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_TRADES_PER_DAY", "10")))
+    model_c_max_position_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_POSITION_PCT", 0.30))
+    model_c_daily_loss_pct: float = field(default_factory=lambda: _float("MODEL_C_DAILY_LOSS_PCT", 0.035))
+    model_c_max_trades_per_day: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_TRADES_PER_DAY", "12")))
     model_c_max_consecutive_losses: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_CONSECUTIVE_LOSSES", "3")))
-    model_c_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_OPEN_POSITIONS", "3")))
-    model_c_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_EXPOSURE_PCT", 0.75))
+    model_c_max_open_positions: int = field(default_factory=lambda: int(os.getenv("MODEL_C_MAX_OPEN_POSITIONS", "4")))
+    model_c_max_exposure_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_EXPOSURE_PCT", 0.80))
+    model_c_min_rvol: float = field(default_factory=lambda: _float("MODEL_C_MIN_RVOL", 1.25))
+    model_c_require_positive_1m: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_POSITIVE_1M", True))
+    model_c_require_vwap_or_positive_5m: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_VWAP_OR_POSITIVE_5M", True))
+    model_c_max_distance_from_hod_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_DISTANCE_FROM_HOD_PCT", 5.0))
+    model_c_max_extension_from_vwap_pct: float = field(default_factory=lambda: _float("MODEL_C_MAX_EXTENSION_FROM_VWAP_PCT", 0.08))
 
     poll_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_SECONDS", "10")))
     trade_log_dir: str = field(default_factory=lambda: os.getenv("TRADE_LOG_DIR", str(ROOT / "trade-data")))
@@ -206,6 +211,12 @@ class Settings:
             raise ValueError("MODEL_C_LLM_TIMEOUT_SECONDS must be positive.")
         if self.model_c_kronos_lookback <= 0 or self.model_c_kronos_pred_len <= 0:
             raise ValueError("Model C Kronos lookback and prediction length must be positive.")
+        if self.model_c_min_rvol <= 0:
+            raise ValueError("MODEL_C_MIN_RVOL must be positive.")
+        if self.model_c_max_distance_from_hod_pct <= 0:
+            raise ValueError("MODEL_C_MAX_DISTANCE_FROM_HOD_PCT must be positive.")
+        if not (0 < self.model_c_max_extension_from_vwap_pct < 1):
+            raise ValueError("MODEL_C_MAX_EXTENSION_FROM_VWAP_PCT must be between 0 and 1.")
 
         if not (0 < self.model_a_weakness_exit_pct < 1):
             raise ValueError("MODEL_A_WEAKNESS_EXIT_PCT must be between 0 and 1.")
