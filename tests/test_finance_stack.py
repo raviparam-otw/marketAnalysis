@@ -1,6 +1,6 @@
 import pandas as pd
 
-from intraday_lab.finance_stack import FinanceIntelligenceStack, KronosForecaster
+from intraday_lab.finance_stack import FinBERTSentiment, FinanceIntelligenceStack, KronosForecaster
 
 
 class FakeSentiment:
@@ -127,3 +127,11 @@ def test_auxiliary_failures_are_recorded_as_degraded_evidence():
     assert enriched[0]["kronos"]["available"] is False
     assert stack.status()["finbert"]["state"] == "DEGRADED"
     assert stack.status()["kronos"]["state"] == "DEGRADED"
+
+
+def test_missing_headline_is_no_data_not_neutral():
+    sentiment = FinBERTSentiment("ProsusAI/finbert", enabled=True)
+    result = sentiment.analyze(None)
+    assert result["empty"] is True
+    assert result["label"] == "no_data"
+    assert result["neutral"] == 0.0
