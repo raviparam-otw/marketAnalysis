@@ -382,26 +382,67 @@ class ModelCAdvisor:
         now: datetime,
         market_aligned: bool,
         min_confidence: float,
-    ) -> Signal | None:
+        min_rvol: float = 1.25,
+        require_positive_1m: bool = True,
+        require_vwap_or_positive_5m: bool = True,
+        max_distance_from_hod_pct: float = 5.0,
+        max_extension_from_vwap_pct: float = 0.08,
+    ) -> tuple[Signal | None, list[str]]:
         if str(decision.get("decision", "HOLD")).upper() != "BUY":
-            return None
+            return None, []
 
         symbol = str(decision.get("symbol") or "").upper()
         candidate = next((item for item in shortlist if item["symbol"].upper() == symbol), None)
         if not candidate:
-            return None
+            return None, ["symbol not in shortlist"]
 
         try:
             confidence = float(decision.get("confidence", 0.0))
         except (TypeError, ValueError):
             confidence = 0.0
         if confidence < min_confidence:
-            return None
+            return None, [f"confidence {confidence:.2f} below minimum {min_confidence:.2f}"]
 
         try:
             stop_pct = float(decision.get("stop_pct", 0.015))
         except (TypeError, ValueError):
             stop_pct = 0.015
+
+        execution_rejections = []
+        rvol = float(candidate.get("relative_volume", 0.0) or 0.0)
+        return_1m = float(candidate.get("return_1m_pct", 0.0) or 0.0)
+        return_5m = float(candidate.get("return_5m_pct", 0.0) or 0.0)
+        distance_hod_pct = float(candidate.get("distance_hod_pct", -999.0) or -999.0)
+        price = float(candidate.get("price", 0.0) or 0.0)
+        vwap = float(candidate.get("vwap", 0.0) or 0.0)
+        above_vwap = bool(candidate.get("above_vwap"))
+
+        if rvol < min_rvol:
+            execution_rejections.append(
+                f"RVOL {rvol:.2f}x below {min_rvol:.2f}x minimum"
+            )
+        if require_positive_1m and return_1m <= 0:
+            execution_rejections.append(
+                f"1m momentum {return_1m:.2f}% is not positive"
+            )
+        if require_vwap_or_positive_5m and not (above_vwap or return_5m > 0):
+            execution_rejections.append(
+                f"below VWAP with non-positive 5m momentum ({return_5m:.2f}%)"
+            )
+        if distance_hod_pct < -abs(max_distance_from_hod_pct):
+            execution_rejections.append(
+                f"{abs(distance_hod_pct):.2f}% below HOD exceeds {max_distance_from_hod_pct:.2f}% limit"
+            )
+        if vwap > 0 and price > vwap:
+            extension_from_vwap = (price / vwap) - 1
+            if extension_from_vwap > max_extension_from_vwap_pct:
+                execution_rejections.append(
+                    f"{extension_from_vwap * 100:.2f}% above VWAP exceeds "
+                    f"{max_extension_from_vwap_pct * 100:.2f}% extension limit"
+                )
+
+        if execution_rejections:
+            return None, execution_rejections
         stop_pct = min(0.03, max(0.005, stop_pct))
 
         price = float(candidate["price"])
@@ -422,7 +463,7 @@ class ModelCAdvisor:
             "llm_desk_report": decision.get("desk_report") or {},
             "candidate": candidate,
         }
-        return Signal(
+        signal = Signal(
             symbol=symbol,
             decision=Decision.BUY,
             price=price,
@@ -441,3 +482,4 @@ class ModelCAdvisor:
             score=confidence * 100 + float(candidate["pre_score"]),
             context=context,
         )
+        return signal, []
