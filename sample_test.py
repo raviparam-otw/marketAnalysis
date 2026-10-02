@@ -203,12 +203,17 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
         decision_c = dict(fixture["portfolio_manager"])
         decision_c["desk_report"] = fixture["analyst_committee"]
 
-    signal_c = advisor.signal_from_decision(
+    signal_c, c_rejections = advisor.signal_from_decision(
         shortlist,
         decision_c,
         now=now,
         market_aligned=aligned,
         min_confidence=config.model_c_min_confidence,
+        min_rvol=config.model_c_min_rvol,
+        require_positive_1m=config.model_c_require_positive_1m,
+        require_vwap_or_positive_5m=config.model_c_require_vwap_or_positive_5m,
+        max_distance_from_hod_pct=config.model_c_max_distance_from_hod_pct,
+        max_extension_from_vwap_pct=config.model_c_max_extension_from_vwap_pct,
     )
 
     results = {
@@ -231,6 +236,7 @@ def run_sample(*, live_llm: bool = False, capital_per_model: float = 33_333.33) 
                 "decision": signal_c.decision.value if signal_c else "HOLD",
                 "confidence": float(decision_c.get("confidence", 0.0) or 0.0),
                 "reason": signal_c.reason if signal_c else decision_c.get("rationale"),
+                "execution_rejections": c_rejections,
                 "shortlist": [item["symbol"] for item in shortlist],
                 "llm_mode": "FIN-R1 LIVE" if live_llm else "FIXTURE",
                 "stack": {
