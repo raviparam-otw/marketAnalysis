@@ -134,7 +134,7 @@ def test_model_a_exits_stalled_failed_breakout_after_five_minutes():
 
 def test_model_a_still_supports_multiple_open_positions():
     risk = RiskManager(config(), model="A", capital=50_000)
-    assert risk.max_open_positions == 3
+    assert risk.max_open_positions == 4
     assert risk.max_entries_per_cycle == 2
 
 
