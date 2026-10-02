@@ -59,10 +59,10 @@ class FinBERTSentiment:
     def analyze(self, text: str | None) -> dict:
         if not text:
             return {
-                "label": "neutral",
+                "label": "no_data",
                 "positive": 0.0,
                 "negative": 0.0,
-                "neutral": 1.0,
+                "neutral": 0.0,
                 "signed_score": 0.0,
                 "source": self.model_name,
                 "empty": True,
