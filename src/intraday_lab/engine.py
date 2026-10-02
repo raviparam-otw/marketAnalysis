@@ -91,8 +91,8 @@ class TradingEngine:
         self.models = {
             "A": ModelRuntime(
                 "A",
-                "CONTROL",
-                "Opening Range / VWAP",
+                "AGGRESSIVE RULES",
+                "Opening Range / VWAP Momentum",
                 OpeningRangeVwapStrategy(
                     relative_volume_min=config.relative_volume_min,
                     breakout_buffer_pct=config.model_a_breakout_buffer_pct,
@@ -105,7 +105,7 @@ class TradingEngine:
             ),
             "C": ModelRuntime(
                 "C",
-                "ADAPTIVE",
+                "AGGRESSIVE AI",
                 "Fin-R1 + Kronos + FinBERT",
                 self.model_c,
                 RiskManager(config, "C"),
@@ -907,12 +907,17 @@ class TradingEngine:
             model.log("ERROR", "Model C Fin-R1 decision failed", error=str(exc))
             return []
 
-        selected = self.model_c.signal_from_decision(
+        selected, execution_rejections = self.model_c.signal_from_decision(
             shortlist,
             decision,
             now=now,
             market_aligned=market_aligned,
             min_confidence=self.config.model_c_min_confidence,
+            min_rvol=self.config.model_c_min_rvol,
+            require_positive_1m=self.config.model_c_require_positive_1m,
+            require_vwap_or_positive_5m=self.config.model_c_require_vwap_or_positive_5m,
+            max_distance_from_hod_pct=self.config.model_c_max_distance_from_hod_pct,
+            max_extension_from_vwap_pct=self.config.model_c_max_extension_from_vwap_pct,
         )
 
         decision_name = str(decision.get("decision", "HOLD")).upper()
@@ -929,6 +934,14 @@ class TradingEngine:
         model.last_scan_log_at = now
 
         if selected is None:
+            if execution_rejections:
+                model.log(
+                    "CONTROL",
+                    "Model C BUY rejected by deterministic validator",
+                    symbol=decision.get("symbol"),
+                    confidence=round(confidence, 4),
+                    reasons=execution_rejections,
+                )
             return []
 
         model.latest_signals[selected.symbol] = selected.to_dict()
