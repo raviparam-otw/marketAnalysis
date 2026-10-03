@@ -159,6 +159,7 @@ class TradingEngine:
             for model in self.models.values()
             for guard in model.guards.values()
         )
+
     @staticmethod
     def _is_two_way_session(session: ExperimentSession | None) -> bool:
         if session is None:
@@ -177,7 +178,7 @@ class TradingEngine:
         open_orders: list,
         now: datetime | None = None,
     ) -> bool:
-        """Migrate a same-day legacy session to A/C only when the paper account is flat."""
+        """Migrate A/C allocation while leaving unrelated shared-account activity untouched."""
         current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         existing = self.session_store.load_today(current)
         if existing is None or self._session_matches_fixed_allocations(existing):
@@ -495,6 +496,7 @@ class TradingEngine:
 
         account = await asyncio.to_thread(self.broker.account_snapshot)
         positions = await asyncio.to_thread(self.broker.positions)
+        open_orders = await asyncio.to_thread(self.broker.open_orders)
 
         guard_symbols = list({
             symbol
@@ -547,6 +549,11 @@ class TradingEngine:
         await asyncio.to_thread(self.news.refresh, self.universe)
 
         locked = set(position_map)
+        locked.update(
+            str(getattr(order, "symbol", "")).upper()
+            for order in open_orders
+            if getattr(order, "symbol", None)
+        )
         locked.update(
             symbol
             for model in self.models.values()
