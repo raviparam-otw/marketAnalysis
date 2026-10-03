@@ -16,7 +16,7 @@ if [[ ! -f ".models/Fin-R1-4bit/config.json" ]]; then
   exit 1
 fi
 
-echo "Starting reliable single-threaded Fin-R1 at http://127.0.0.1:8080/v1 ..."
+echo "Starting threaded Fin-R1 HTTP server with serialized MLX inference at http://127.0.0.1:8080/v1 ..."
 exec python scripts/finr1_local_server.py \
   --model .models/Fin-R1-4bit \
   --model-id SUFE-AIFLM-Lab/Fin-R1 \
