@@ -2,7 +2,7 @@
 
 A local, **paper-trading-only** A/C intraday research workstation running two independent decision styles against the same market session.
 
-- **Model A — AGGRESSIVE RULES:** fast Opening Range / VWAP momentum across the dynamic universe, with one-bar confirmation, multi-position support, faster re-entry, and deterministic exits.
+- **Model A — AGGRESSIVE RULES:** Opening Range / VWAP momentum across the dynamic universe with two-bar confirmation, anti-chase entry controls, structural HOLD/EXIT logic, fresh-breakout re-entry, profit locking, and multi-position support.
 - **Model C — AGGRESSIVE AI:** Fin-R1 financial reasoner + Kronos K-line forecaster + FinBERT financial sentiment, followed by a deterministic market-fact execution validator.
 
 The application is intentionally locked to Alpaca paper trading.
