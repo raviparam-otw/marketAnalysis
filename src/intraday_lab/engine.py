@@ -229,10 +229,11 @@ class TradingEngine:
         existing_session = self.session_store.load_today(now)
 
         open_orders = await asyncio.to_thread(self.broker.open_orders)
-        if open_orders:
+        owned_open_orders = [order for order in open_orders if self._is_our_order(order)]
+        if owned_open_orders:
             raise RuntimeError(
-                f"Cannot start with {len(open_orders)} open Alpaca order(s). "
-                "Wait for them to finish or use Emergency Flatten."
+                f"Cannot start with {len(owned_open_orders)} open Model A/C order(s). "
+                "Wait for them to finish or clear only this bot's orders."
             )
 
         positions = await asyncio.to_thread(self.broker.positions)
@@ -246,14 +247,11 @@ class TradingEngine:
         if migrated:
             existing_session = self.session
 
-        if positions and existing_session is None:
-            symbols = ", ".join(sorted(str(position.symbol) for position in positions))
-            raise RuntimeError(
-                "Cannot create a clean A/C session while pre-existing PAPER positions exist "
-                f"({symbols}). Use Emergency Flatten first."
-            )
-
-        self.session = existing_session or self.session_store.create_or_load(account["equity"], now)
+        self.session = existing_session or self.session_store.create_or_load(
+            account["equity"],
+            now,
+            self.config.model_allocation_dollars,
+        )
         self._configure_allocations(self.session)
 
         if positions:
@@ -294,10 +292,7 @@ class TradingEngine:
                 and row.get("model") in self.models
             ]
             if not candidates:
-                raise RuntimeError(
-                    f"Existing PAPER position {symbol} is not attributable to Model A/C. "
-                    "Use Emergency Flatten before starting a clean experiment."
-                )
+                continue
 
             row = candidates[-1]
             model = self.models[row["model"]]
@@ -337,8 +332,18 @@ class TradingEngine:
             recovered_symbols.add(symbol)
             model.log("WARN", "Recovered open PAPER position after restart", symbol=symbol, qty=qty)
 
-        if len(recovered_symbols) != len(positions):
-            raise RuntimeError("Not all existing PAPER positions could be recovered safely.")
+        foreign_symbols = [
+            str(position.symbol).upper()
+            for position in positions
+            if str(position.symbol).upper() not in recovered_symbols
+        ]
+        if foreign_symbols:
+            for model in self.models.values():
+                model.log(
+                    "INFO",
+                    "Shared-account positions left untouched",
+                    symbols=sorted(foreign_symbols),
+                )
 
     async def pause_entries(self) -> None:
         if not self.running:
