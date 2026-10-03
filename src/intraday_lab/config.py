@@ -72,6 +72,8 @@ class Settings:
     model_a_min_position_pct: float = field(default_factory=lambda: _float("MODEL_A_MIN_POSITION_PCT", 0.02))
     model_a_structure_confirm_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_STRUCTURE_CONFIRM_BARS", "2")))
     model_a_structure_break_pct: float = field(default_factory=lambda: _float("MODEL_A_STRUCTURE_BREAK_PCT", 0.001))
+    model_a_profit_lock_trigger_pct: float = field(default_factory=lambda: _float("MODEL_A_PROFIT_LOCK_TRIGGER_PCT", 0.0075))
+    model_a_profit_lock_pct: float = field(default_factory=lambda: _float("MODEL_A_PROFIT_LOCK_PCT", 0.003))
     model_a_max_entries_per_symbol: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_ENTRIES_PER_SYMBOL", "3")))
     model_a_entry_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_ENTRY_TIMEOUT_SECONDS", "20")))
 
@@ -256,6 +258,10 @@ class Settings:
             raise ValueError("MODEL_A_STRUCTURE_CONFIRM_BARS must be 2 or 3.")
         if not (0 <= self.model_a_structure_break_pct < 0.02):
             raise ValueError("MODEL_A_STRUCTURE_BREAK_PCT must be between 0 and 0.02.")
+        if not (0 < self.model_a_profit_lock_trigger_pct < 0.10):
+            raise ValueError("MODEL_A_PROFIT_LOCK_TRIGGER_PCT must be between 0 and 0.10.")
+        if not (0 <= self.model_a_profit_lock_pct < self.model_a_profit_lock_trigger_pct):
+            raise ValueError("MODEL_A_PROFIT_LOCK_PCT must be below its trigger.")
         if self.model_a_max_entries_per_symbol <= 0:
             raise ValueError("MODEL_A_MAX_ENTRIES_PER_SYMBOL must be positive.")
         if self.model_a_entry_timeout_seconds <= 0:
