@@ -88,7 +88,7 @@ def test_model_room_caps_entry_notional():
     assert result.notional == 2_000
 
 
-def test_model_a_cuts_weakness_before_wider_stop():
+def test_model_a_does_not_exit_on_small_timer_based_pullback():
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
@@ -96,8 +96,6 @@ def test_model_a_cuts_weakness_before_wider_stop():
     entered = datetime(2026, 9, 30, 10, 0, tzinfo=eastern)
     risk = RiskManager(config(), model="A", capital=50_000)
 
-    # A quick -0.6% move is enough to cut a failed breakout even if the
-    # original technical stop is much lower.
     assert (
         risk.exit_reason(
             100.0,
@@ -105,31 +103,16 @@ def test_model_a_cuts_weakness_before_wider_stop():
             100.1,
             97.5,
             entered_at=entered,
-            now=entered + timedelta(minutes=2),
-        )
-        == "model_a_weakness_exit"
-    )
-
-
-def test_model_a_exits_stalled_failed_breakout_after_five_minutes():
-    from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
-
-    eastern = ZoneInfo("America/New_York")
-    entered = datetime(2026, 9, 30, 10, 0, tzinfo=eastern)
-    risk = RiskManager(config(), model="A", capital=50_000)
-
-    assert (
-        risk.exit_reason(
-            100.0,
-            99.8,
-            100.2,
-            97.5,
-            entered_at=entered,
             now=entered + timedelta(minutes=6),
         )
-        == "model_a_failed_breakout"
+        is None
     )
+
+
+def test_model_a_locks_meaningful_profit_after_trade_proves_itself():
+    risk = RiskManager(config(), model="A", capital=50_000)
+    assert risk.exit_reason(100.0, 100.25, 100.80, 97.5) == "model_a_profit_lock"
+    assert risk.exit_reason(100.0, 100.50, 100.80, 97.5) is None
 
 
 def test_model_a_still_supports_multiple_open_positions():
