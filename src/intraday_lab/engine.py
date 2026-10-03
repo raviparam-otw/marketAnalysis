@@ -71,7 +71,7 @@ class ModelRuntime:
 
 
 class TradingEngine:
-    """Paper-only two-model experiment with frozen daily A/C virtual allocations."""
+    """Paper-only two-model experiment with fixed A/C virtual allocations on a shared account."""
 
     def __init__(self, config: Settings, broker: PaperBroker) -> None:
         self.config = config
@@ -139,6 +139,27 @@ class TradingEngine:
             model.peak_equity = max(model.peak_equity, capital)
 
     @staticmethod
+    def _is_our_order(order) -> bool:
+        client_order_id = str(getattr(order, "client_order_id", "") or "").lower()
+        return client_order_id.startswith("model-a-") or client_order_id.startswith("model-c-")
+
+    def _session_matches_fixed_allocations(self, session: ExperimentSession | None) -> bool:
+        if session is None:
+            return False
+        target = round(float(self.config.model_allocation_dollars), 2)
+        return (
+            set(session.allocations) == {"A", "C"}
+            and round(float(session.allocations.get("A", 0.0)), 2) == target
+            and round(float(session.allocations.get("C", 0.0)), 2) == target
+        )
+
+    def _experiment_exposure(self) -> float:
+        return sum(
+            guard.quantity * (guard.current_price or guard.entry_price)
+            for model in self.models.values()
+            for guard in model.guards.values()
+        )
+    @staticmethod
     def _is_two_way_session(session: ExperimentSession | None) -> bool:
         if session is None:
             return False
@@ -159,21 +180,35 @@ class TradingEngine:
         """Migrate a same-day legacy session to A/C only when the paper account is flat."""
         current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         existing = self.session_store.load_today(current)
-        if existing is None or self._is_two_way_session(existing):
+        if existing is None or self._session_matches_fixed_allocations(existing):
             self.session = existing
             return False
-        if positions or open_orders:
+
+        owned_open_orders = [order for order in open_orders if self._is_our_order(order)]
+        open_trades = self.journal.open_trades()
+        owned_symbols = {
+            str(row.get("symbol", "")).upper()
+            for row in open_trades
+            if row.get("model") in self.models
+        }
+        owned_positions = [
+            position
+            for position in positions
+            if str(position.symbol).upper() in owned_symbols
+        ]
+        if owned_positions or owned_open_orders:
             return False
 
         self.session = self.session_store.replace_with_two_way(
             float(account["equity"]),
             current,
+            self.config.model_allocation_dollars,
         )
         self._configure_allocations(self.session)
         for model in self.models.values():
             model.log(
                 "CONTROL",
-                "Legacy session migrated to equal A/C split",
+                "Session migrated to fixed A/C allocations",
                 allocation=round(model.capital, 2),
                 session_id=self.session.session_id,
             )
