@@ -132,6 +132,8 @@ class OpeningRangeVwapStrategy:
 
         breakout_level = opening_high * (1 + self.breakout_buffer_pct)
         recent = session.iloc[-3:]
+        recent_prior = session.iloc[-6:-1] if len(session) >= 6 else session.iloc[:-1]
+        recent_5_bar_high_prior = float(recent_prior["high"].max()) if not recent_prior.empty else opening_high
         closes_above_breakout = int((recent["close"] > breakout_level).sum())
         breakout_hold = closes_above_breakout >= self.confirmation_bars
 
@@ -177,6 +179,7 @@ class OpeningRangeVwapStrategy:
             "bar_age_seconds": bar_age_seconds,
             "rvol_mode": rvol_mode,
             "volume_acceleration_1m_vs_20m": volume_acceleration,
+            "recent_5_bar_high_prior": recent_5_bar_high_prior,
         }
 
         # Prefer persistent breakouts, not a one-bar poke above the opening range.
