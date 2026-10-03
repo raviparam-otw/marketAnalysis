@@ -48,23 +48,35 @@ class ExperimentSessionStore:
             return ExperimentSession(**json.load(handle))
 
     @staticmethod
-    def two_way_allocations(starting_equity: float) -> tuple[float, dict[str, float]]:
+    def fixed_allocations(
+        starting_equity: float,
+        model_allocation_dollars: float = 100.0,
+    ) -> tuple[float, dict[str, float]]:
         if starting_equity <= 0:
             raise ValueError("Cannot start an experiment with non-positive account equity.")
+        allocation = Decimal(str(model_allocation_dollars)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if allocation <= 0:
+            raise ValueError("Model allocation must be positive.")
+        if Decimal(str(starting_equity)) < allocation * 2:
+            raise ValueError("Account equity must cover the fixed Model A and C allocations.")
         total = Decimal(str(starting_equity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocation_a = (total / Decimal("2")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocation_c = total - allocation_a
-        return float(total), {
-            "A": float(allocation_a),
-            "C": float(allocation_c),
-        }
+        return float(total), {"A": float(allocation), "C": float(allocation)}
 
-    def create_or_load(self, starting_equity: float, now: datetime | None = None) -> ExperimentSession:
+    def create_or_load(
+        self,
+        starting_equity: float,
+        now: datetime | None = None,
+        model_allocation_dollars: float = 100.0,
+    ) -> ExperimentSession:
         current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         existing = self.load_today(current)
         if existing:
             return existing
-        total, allocations = self.two_way_allocations(starting_equity)
+        total, allocations = self.fixed_allocations(
+            starting_equity, model_allocation_dollars
+        )
         session = ExperimentSession(
             session_id=f"{current.strftime('%Y%m%d')}-{uuid4().hex[:10]}",
             trading_date=current.date().isoformat(),
@@ -81,8 +93,9 @@ class ExperimentSessionStore:
         self,
         starting_equity: float,
         now: datetime | None = None,
+        model_allocation_dollars: float = 100.0,
     ) -> ExperimentSession:
-        """Replace a flat legacy session with a fresh A/C split."""
+        """Replace a legacy session with fixed A/C allocations."""
         current = (now or datetime.now(EASTERN)).astimezone(EASTERN)
         path = self._path(current)
         if path.exists():
@@ -91,7 +104,9 @@ class ExperimentSessionStore:
                 self.directory.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, backup)
 
-        total, allocations = self.two_way_allocations(starting_equity)
+        total, allocations = self.fixed_allocations(
+            starting_equity, model_allocation_dollars
+        )
         session = ExperimentSession(
             session_id=f"{current.strftime('%Y%m%d')}-{uuid4().hex[:10]}",
             trading_date=current.date().isoformat(),
