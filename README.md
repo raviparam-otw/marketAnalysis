@@ -114,6 +114,8 @@ bash scripts/start_finr1_macos.sh
 
 The local Fin-R1 server listens on `http://127.0.0.1:8080/v1`.
 
+The server now uses threaded HTTP request handling so `/health` and `/v1/models` stay responsive during inference. MLX generation itself remains serialized behind a lock to avoid competing GPU/unified-memory generations on Apple Silicon. Model C uses shorter response budgets (700 analyst / 350 manager tokens), a 120-second request timeout, a 60-second decision cadence, and a shortlist of 5 by default.
+
 The launcher uses the repository's **single-threaded MLX server wrapper** rather than `mlx_lm.server`. This avoids worker-thread/Metal stream failures that can cause an empty HTTP response on some Apple Silicon/Python 3.13 combinations.
 
 Then verify the complete finance stack without placing any Alpaca orders:
