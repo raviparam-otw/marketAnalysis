@@ -7,22 +7,21 @@ A local, **paper-trading-only** A/C intraday research workstation running two in
 
 The application is intentionally locked to Alpaca paper trading.
 
-## Session capital: automatic A/C split
+## Session capital: fixed A/C budgets on a shared account
 
-The live engine no longer assumes a $100,000 account.
+Models A and C now share the Alpaca PAPER account with other strategies. Each model is assigned a fixed virtual capital budget of **$100 by default**, controlled by `MODEL_ALLOCATION_DOLLARS`.
 
-When **Start Session** is pressed, the engine reads the actual Alpaca paper account equity and freezes equal A/C allocations for that trading day.
+- Model A allocation → $100
+- Model C allocation → $100
+- Other positions and orders in the Alpaca account are treated as foreign and left untouched.
 
-- $100,000 equity → A $50,000 / C $50,000
-- $83,421.17 equity → A $41,710.59 / C $41,710.58
-
-The allocation is frozen for the trading day so one model's P&L cannot silently change another model's starting capital. Legacy same-day sessions are migrated to A/C only when the paper account is flat.
+The account can hold substantially more equity; A/C risk sizing is calculated only from their own fixed allocations. Existing same-day A/C sessions are migrated to the fixed allocation when this bot has no open A/C exposure.
 
 ## Risk scales with the account
 
-Live risk controls scale from each model's frozen allocation. Both models run aggressive paper-trading profiles, but Model A stays deterministic while Model C uses adaptive AI reasoning. Combined gross exposure is capped at 80% of account starting equity by default. Both models remain subject to cash, per-model exposure, open-position, trade-count, consecutive-loss, and daily-loss controls.
+Live risk controls scale from each model's fixed allocation. With the default $100 budget, the existing 80% per-model exposure rule limits each model to $80 of concurrent exposure, while the 30% position rule limits a single position to about $30. Both models remain subject to cash, open-position, trade-count, consecutive-loss, and daily-loss controls.
 
-A trade is also capped by actual Alpaca cash and remaining global exposure room.
+Shared-account positions do not consume the A/C virtual exposure budget, but actual Alpaca cash still acts as a hard account-level constraint. The scanner also treats symbols already held anywhere in the account as locked so A/C does not intentionally collide with another strategy on the same symbol.
 
 ## Model A v2 profile
 
@@ -141,7 +140,7 @@ The top bar is designed around safe experiment operation:
 - **Pause Entries** — blocks new entries while continuing to manage existing positions and exits.
 - **Resume** — re-enables entries.
 - **Drain & Stop** — takes no new positions and keeps managing existing positions until the experiment is flat, then stops.
-- **Emergency Flatten** — cancels open orders and submits exits for PAPER positions immediately.
+- **Emergency Flatten** — cancels and exits only positions/orders tracked by Models A/C; foreign shared-account positions are left untouched.
 
 The normal Stop action intentionally does not abandon a live position.
 
