@@ -414,11 +414,16 @@ class TradingEngine:
             except asyncio.CancelledError:
                 pass
 
-        try:
-            await asyncio.to_thread(self.broker.cancel_open_orders)
-        except Exception as exc:
-            for model in self.models.values():
-                model.log("ERROR", "Could not cancel open orders", error=str(exc))
+        # Shared-account safety: touch only orders tracked by this A/C bot.
+        for model in self.models.values():
+            for guard in model.guards.values():
+                for order_id in (guard.entry_order_id, guard.protective_stop_order_id):
+                    if not order_id:
+                        continue
+                    try:
+                        await asyncio.to_thread(self.broker.cancel_order, order_id)
+                    except Exception:
+                        pass
 
         positions = await asyncio.to_thread(self.broker.positions)
         for position in positions:
@@ -459,7 +464,8 @@ class TradingEngine:
                     guard.exit_pending = True
                     guard_owner.log("WARN", "Emergency flatten submitted", symbol=symbol, qty=qty)
                 else:
-                    await asyncio.to_thread(self.broker.close_position, symbol)
+                    # Foreign/shared-account position: never touch it.
+                    continue
             except Exception as exc:
                 for model in self.models.values():
                     model.log("ERROR", "Emergency flatten failed", symbol=symbol, error=str(exc))
@@ -522,7 +528,7 @@ class TradingEngine:
 
         if self.draining:
             experiment_positions = any(model.guards for model in self.models.values())
-            if not experiment_positions and not positions:
+            if not experiment_positions:
                 self.running = False
                 self.draining = False
                 if self.session:
@@ -547,14 +553,14 @@ class TradingEngine:
             for symbol in model.guards
         )
 
-        total_exposure = self._actual_exposure(positions)
-        session_equity = self.session.starting_equity if self.session else account["equity"]
+        total_exposure = self._experiment_exposure()
+        experiment_capital = sum(self.session.allocations.values()) if self.session else 0.0
         effective_global_exposure_pct = (
             max(self.config.max_account_exposure_pct, 0.80)
             if self.config.action_day_mode
             else self.config.max_account_exposure_pct
         )
-        global_cap = session_equity * effective_global_exposure_pct
+        global_cap = experiment_capital * effective_global_exposure_pct
         global_room = max(0.0, global_cap - total_exposure)
         available_cash = max(0.0, float(account.get("cash", 0.0)))
 
@@ -1530,14 +1536,13 @@ class TradingEngine:
             session_state = self.session.state
         else:
             starting_equity = account_equity
-            preview_a = round(account_equity / 2.0, 2) if account_equity else 0.0
-            preview_c = round(account_equity - preview_a, 2) if account_equity else 0.0
-            allocations = {"A": preview_a, "C": preview_c}
+            preview = self.config.model_allocation_dollars if account_equity >= self.config.model_allocation_dollars * 2 else 0.0
+            allocations = {"A": preview, "C": preview}
             session_id = None
             started_at = None
             session_state = "READY"
 
-        total_exposure = self._actual_exposure(self.last_positions)
+        total_exposure = self._experiment_exposure()
         account_pnl = account_equity - starting_equity if starting_equity else 0.0
 
         models = {}
@@ -1619,13 +1624,13 @@ class TradingEngine:
                 "account_pnl": account_pnl,
                 "allocation_a": float(allocations.get("A", 0.0)),
                 "allocation_c": float(allocations.get("C", 0.0)),
-                "split": "A/C equal halves",
+                "split": f"A/C fixed ${self.config.model_allocation_dollars:.2f} each",
                 "global_exposure": total_exposure,
-                "global_exposure_limit": starting_equity * (
+                "global_exposure_limit": sum(allocations.values()) * (
                     max(self.config.max_account_exposure_pct, 0.80)
                     if self.config.action_day_mode
                     else self.config.max_account_exposure_pct
-                ) if starting_equity else 0.0,
+                ) if allocations else 0.0,
                 "action_day_mode": self.config.action_day_mode,
                 "entry_window_open": self._entry_session(now),
                 "market_time": now.isoformat(timespec="seconds"),
