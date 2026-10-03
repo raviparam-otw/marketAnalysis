@@ -47,6 +47,8 @@ class PositionGuard:
     high_watermark: float
     stop_price: float
     entered_at: datetime
+    breakout_level: float = 0.0
+    entry_vwap: float = 0.0
     current_price: float = 0.0
     unrealized_pl: float = 0.0
     partial_taken: bool = False
