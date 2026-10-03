@@ -113,3 +113,23 @@ def test_model_a_ignores_current_forming_minute_bar():
         "PARTIAL", bars, True, datetime(2026, 9, 25, 9, 55, 30, tzinfo=EASTERN)
     )
     assert signal.price < 110.0
+
+
+def test_model_a_exposes_recent_breakout_level_for_reentry():
+    index = pd.date_range("2026-09-25 09:30", periods=30, freq="min", tz=EASTERN)
+    close = np.concatenate([np.full(20, 100.0), np.linspace(100.2, 101.8, 10)])
+    bars = pd.DataFrame(
+        {
+            "open": close - 0.1,
+            "high": close + 0.1,
+            "low": close - 0.2,
+            "close": close,
+            "volume": [100] * 29 + [1000],
+        },
+        index=index,
+    )
+    signal = OpeningRangeVwapStrategy(1.5, reentry_lookback_bars=5).evaluate(
+        "REENTRY", bars, True, datetime(2026, 9, 25, 10, 0, tzinfo=EASTERN)
+    )
+    assert signal.context["reentry_lookback_bars"] == 5
+    assert signal.context["recent_breakout_high_prior"] > 0
