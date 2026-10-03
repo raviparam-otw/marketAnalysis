@@ -109,9 +109,9 @@ class Settings:
     model_c_llm_base_url: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_BASE_URL", "http://127.0.0.1:8080/v1"))
     model_c_llm_model: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_MODEL", ".models/Fin-R1-4bit"))
     model_c_llm_api_key: str = field(default_factory=lambda: os.getenv("MODEL_C_LLM_API_KEY", ""))
-    model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "60")))
-    model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "30")))
-    model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "8")))
+    model_c_llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_LLM_TIMEOUT_SECONDS", "120")))
+    model_c_decision_interval_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_C_DECISION_INTERVAL_SECONDS", "60")))
+    model_c_shortlist_size: int = field(default_factory=lambda: int(os.getenv("MODEL_C_SHORTLIST_SIZE", "5")))
     model_c_min_confidence: float = field(default_factory=lambda: _float("MODEL_C_MIN_CONFIDENCE", 0.70))
     model_c_require_full_stack: bool = field(default_factory=lambda: _bool("MODEL_C_REQUIRE_FULL_STACK", False))
 
