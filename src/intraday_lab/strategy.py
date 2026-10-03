@@ -66,6 +66,7 @@ class OpeningRangeVwapStrategy:
         max_extension_from_or_pct: float = 0.06,
         max_extension_from_vwap_pct: float = 0.04,
         max_bar_age_seconds: int = 120,
+        reentry_lookback_bars: int = 5,
     ) -> None:
         self.relative_volume_min = relative_volume_min
         self.breakout_buffer_pct = breakout_buffer_pct
@@ -73,6 +74,7 @@ class OpeningRangeVwapStrategy:
         self.max_extension_from_or_pct = max_extension_from_or_pct
         self.max_extension_from_vwap_pct = max_extension_from_vwap_pct
         self.max_bar_age_seconds = max(1, int(max_bar_age_seconds))
+        self.reentry_lookback_bars = max(2, int(reentry_lookback_bars))
 
     def evaluate(self, symbol: str, bars: pd.DataFrame, market_aligned: bool, now: datetime | None = None, catalyst: dict | None = None) -> Signal:
         now = (now or datetime.now(EASTERN)).astimezone(EASTERN)
@@ -132,8 +134,9 @@ class OpeningRangeVwapStrategy:
 
         breakout_level = opening_high * (1 + self.breakout_buffer_pct)
         recent = session.iloc[-3:]
-        recent_prior = session.iloc[-6:-1] if len(session) >= 6 else session.iloc[:-1]
-        recent_5_bar_high_prior = float(recent_prior["high"].max()) if not recent_prior.empty else opening_high
+        lookback = self.reentry_lookback_bars
+        recent_prior = session.iloc[-(lookback + 1):-1] if len(session) >= lookback + 1 else session.iloc[:-1]
+        recent_breakout_high_prior = float(recent_prior["high"].max()) if not recent_prior.empty else opening_high
         closes_above_breakout = int((recent["close"] > breakout_level).sum())
         breakout_hold = closes_above_breakout >= self.confirmation_bars
 
@@ -179,7 +182,8 @@ class OpeningRangeVwapStrategy:
             "bar_age_seconds": bar_age_seconds,
             "rvol_mode": rvol_mode,
             "volume_acceleration_1m_vs_20m": volume_acceleration,
-            "recent_5_bar_high_prior": recent_5_bar_high_prior,
+            "recent_breakout_high_prior": recent_breakout_high_prior,
+            "reentry_lookback_bars": self.reentry_lookback_bars,
         }
 
         # Prefer persistent breakouts, not a one-bar poke above the opening range.
