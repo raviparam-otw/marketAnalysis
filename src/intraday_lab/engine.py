@@ -100,6 +100,7 @@ class TradingEngine:
                     max_extension_from_or_pct=config.model_a_max_extension_from_or_pct,
                     max_extension_from_vwap_pct=config.model_a_max_extension_from_vwap_pct,
                     max_bar_age_seconds=config.model_a_max_bar_age_seconds,
+                    reentry_lookback_bars=config.model_a_reentry_min_bars,
                 ),
                 RiskManager(config, "A"),
             ),
@@ -278,6 +279,7 @@ class TradingEngine:
                 entered_at = datetime.now(EASTERN)
 
             trade_id = row.get("trade_id") or f"recovered-{model.name}-{uuid4().hex[:10]}"
+            strategy_context = context.get("context") or {}
             model.guards[symbol] = PositionGuard(
                 model=model.name,
                 symbol=symbol,
@@ -287,6 +289,12 @@ class TradingEngine:
                 high_watermark=max(entry, float(position.current_price)),
                 stop_price=stop,
                 entered_at=entered_at,
+                breakout_level=float(
+                    strategy_context.get("breakout_level")
+                    or context.get("opening_high")
+                    or 0.0
+                ),
+                entry_vwap=float(context.get("vwap") or 0.0),
                 current_price=float(position.current_price),
                 unrealized_pl=float(position.unrealized_pl),
                 entry_order_id=str(row.get("order_id") or "") or None,
@@ -448,7 +456,7 @@ class TradingEngine:
             for symbol in model.guards
         })
         guard_bars = (
-            await asyncio.to_thread(self.broker.minute_bars, guard_symbols, 1)
+            await asyncio.to_thread(self.broker.minute_bars, guard_symbols, 8)
             if guard_symbols
             else {}
         )
@@ -561,6 +569,22 @@ class TradingEngine:
                     for failed in payload.get("context", {}).get("failed_conditions", []):
                         rejection_counts[failed] = rejection_counts.get(failed, 0) + 1
                     if signal.decision == Decision.BUY:
+                        if model.name == "A" and last_exit is not None:
+                            recent_high = float(
+                                signal.context.get("recent_breakout_high_prior", 0.0) or 0.0
+                            )
+                            fresh_breakout_level = recent_high * (
+                                1 + self.config.model_a_breakout_buffer_pct
+                            )
+                            if recent_high > 0 and signal.price <= fresh_breakout_level:
+                                rejection_counts["fresh reentry breakout"] = (
+                                    rejection_counts.get("fresh reentry breakout", 0) + 1
+                                )
+                                model.latest_signals[symbol]["decision"] = Decision.HOLD.value
+                                model.latest_signals[symbol]["reason"] = (
+                                    "Rejected: reentry requires a fresh local breakout"
+                                )
+                                continue
                         candidates.append(signal)
 
                 if (
@@ -688,6 +712,24 @@ class TradingEngine:
                     )
                     continue
 
+                proposed_notional = float(order_qty) * execution_price
+                if (
+                    model.name == "A"
+                    and proposed_notional < model.capital * self.config.model_a_min_position_pct
+                ):
+                    model.log(
+                        "RISK",
+                        "Entry rejected",
+                        reason="position below minimum meaningful notional",
+                        symbol=candidate.symbol,
+                        notional=round(proposed_notional, 2),
+                        minimum=round(
+                            model.capital * self.config.model_a_min_position_pct,
+                            2,
+                        ),
+                    )
+                    continue
+
                 if model.name == "A":
                     order = await asyncio.to_thread(
                         self.broker.buy_protected_limit_qty,
@@ -705,7 +747,7 @@ class TradingEngine:
                         client_order_id,
                     )
 
-                actual_notional = float(order_qty) * execution_price
+                actual_notional = proposed_notional
                 actual_risk_dollars = float(order_qty) * max(0.0, execution_price - candidate.stop_price)
                 profile = model.risk.profile
                 context = candidate.to_dict() | execution_context | {
@@ -738,6 +780,8 @@ class TradingEngine:
                     high_watermark=candidate.price,
                     stop_price=candidate.stop_price,
                     entered_at=now,
+                    breakout_level=float(candidate.context.get("breakout_level", 0.0) or 0.0),
+                    entry_vwap=float(candidate.vwap or 0.0),
                     current_price=execution_price,
                     entry_order_id=str(order.id),
                 )
@@ -1142,6 +1186,12 @@ class TradingEngine:
                 entered_at=guard.entered_at,
                 now=now,
             )
+            if (
+                not reason
+                and model.name == "A"
+                and self._model_a_structure_broken(guard, frame, now)
+            ):
+                reason = "model_a_structure_break"
             if now.time() >= time(15, 50):
                 reason = "end_of_day"
 
@@ -1247,6 +1297,52 @@ class TradingEngine:
                 reason=reason,
                 qty=round(qty, 4),
             )
+
+    def _model_a_structure_broken(
+        self,
+        guard: PositionGuard,
+        frame,
+        now: datetime,
+    ) -> bool:
+        """Require persistent loss of both breakout support and session VWAP."""
+        if frame is None or frame.empty or guard.breakout_level <= 0:
+            return False
+
+        import pandas as pd
+
+        recent = frame.copy().sort_index()
+        index = pd.DatetimeIndex(recent.index)
+        if index.tz is None:
+            index = index.tz_localize("UTC")
+        recent.index = index.tz_convert(EASTERN)
+        current_minute = now.replace(second=0, microsecond=0)
+        recent = recent[
+            (recent.index.date == now.date())
+            & (recent.index < current_minute)
+        ]
+        if recent.empty:
+            return False
+
+        typical = (recent["high"] + recent["low"] + recent["close"]) / 3
+        cumulative_volume = recent["volume"].cumsum().replace(0, float("nan"))
+        session_vwap = float(
+            ((typical * recent["volume"]).cumsum() / cumulative_volume).iloc[-1]
+        )
+        confirm_bars = self.config.model_a_structure_confirm_bars
+        if len(recent) < confirm_bars:
+            return False
+
+        closes = recent["close"].tail(confirm_bars).astype(float)
+        buffer = self.config.model_a_structure_break_pct
+        below_breakout = bool(
+            (closes < guard.breakout_level * (1 - buffer)).all()
+        )
+        below_vwap = bool(
+            (closes < session_vwap * (1 - buffer)).all()
+        )
+        momentum_negative = float(closes.iloc[-1]) < float(closes.iloc[0])
+
+        return below_breakout and below_vwap and momentum_negative
 
     def _refresh_model_marks(self, position_map: dict) -> None:
         for model in self.models.values():
