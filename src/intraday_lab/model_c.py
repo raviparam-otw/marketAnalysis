@@ -348,7 +348,7 @@ class ModelCAdvisor:
             system=analyst_system,
             payload={"market": market_context, "shortlist": shortlist},
             timeout_seconds=timeout_seconds,
-            max_tokens=1200,
+            max_tokens=700,
         )
 
         manager_system = (
@@ -369,7 +369,7 @@ class ModelCAdvisor:
                 "analyst_committee": analyst_report,
             },
             timeout_seconds=timeout_seconds,
-            max_tokens=900,
+            max_tokens=350,
         )
         final["desk_report"] = analyst_report
         return final
