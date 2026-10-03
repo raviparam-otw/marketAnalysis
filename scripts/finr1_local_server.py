@@ -4,8 +4,9 @@ import argparse
 import json
 import logging
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 
@@ -18,6 +19,9 @@ class FinR1Runtime:
         self.model_id = model_id
         self.model = None
         self.tokenizer = None
+        # MLX generation is intentionally serialized. HTTP requests are threaded
+        # so health/model probes stay responsive while a generation is running.
+        self._generation_lock = Lock()
 
     def load(self) -> None:
         if self.model is not None:
@@ -29,9 +33,11 @@ class FinR1Runtime:
         self.model, self.tokenizer = load(self.model_path)
         LOG.info("Fin-R1 loaded")
 
-    def chat(self, body: dict[str, Any]) -> str:
-        self.load()
+    @property
+    def busy(self) -> bool:
+        return self._generation_lock.locked()
 
+    def chat(self, body: dict[str, Any]) -> str:
         from mlx_lm import generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -45,33 +51,47 @@ class FinR1Runtime:
         temperature = float(body.get("temperature", 0.1) or 0.0)
         top_p = float(body.get("top_p", 0.8) or 0.0)
 
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-        )
+        queued_at = time.monotonic()
+        with self._generation_lock:
+            wait_seconds = time.monotonic() - queued_at
+            self.load()
 
-        sampler = make_sampler(
-            temp=max(0.0, temperature),
-            top_p=max(0.0, min(top_p, 1.0)),
-        )
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+            )
 
-        LOG.info(
-            "Generating response: messages=%s max_tokens=%s temperature=%s top_p=%s",
-            len(messages),
-            max_tokens,
-            temperature,
-            top_p,
-        )
+            sampler = make_sampler(
+                temp=max(0.0, temperature),
+                top_p=max(0.0, min(top_p, 1.0)),
+            )
 
-        result = generate(
-            self.model,
-            self.tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            verbose=False,
-        )
-        return str(result)
+            LOG.info(
+                "Generating response: messages=%s max_tokens=%s temperature=%s "
+                "top_p=%s queue_wait=%.2fs",
+                len(messages),
+                max_tokens,
+                temperature,
+                top_p,
+                wait_seconds,
+            )
+
+            started = time.monotonic()
+            result = generate(
+                self.model,
+                self.tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                verbose=False,
+            )
+            duration = time.monotonic() - started
+            LOG.info(
+                "Generation completed: duration=%.2fs chars=%s",
+                duration,
+                len(str(result)),
+            )
+            return str(result)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -81,12 +101,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         raw = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            # A client can legitimately time out/disconnect while MLX is still
+            # finishing an inference. Do not crash or print a noisy traceback.
+            LOG.warning("Client disconnected before response could be written")
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/v1/models":
@@ -113,6 +138,7 @@ class Handler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "model": self.runtime.model_id,
                     "runtime": "marketAnalysis-local-mlx",
+                    "inference_busy": self.runtime.busy,
                 },
             )
             return
@@ -182,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Single-threaded local OpenAI-compatible server for Fin-R1 on MLX."
+        description="Threaded local OpenAI-compatible server with serialized Fin-R1 MLX inference."
     )
     parser.add_argument("--model", default=".models/Fin-R1-4bit")
     parser.add_argument("--model-id", default="SUFE-AIFLM-Lab/Fin-R1")
@@ -200,10 +226,11 @@ def main() -> int:
     )
 
     Handler.runtime = FinR1Runtime(str(model_path), args.model_id)
-    server = HTTPServer((args.host, args.port), Handler)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server.daemon_threads = True
 
     LOG.info(
-        "Starting single-threaded Fin-R1 server at http://%s:%s/v1",
+        "Starting threaded Fin-R1 HTTP server with serialized MLX inference at http://%s:%s/v1",
         args.host,
         args.port,
     )
