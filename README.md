@@ -24,6 +24,16 @@ Live risk controls scale from each model's frozen allocation. Both models run ag
 
 A trade is also capped by actual Alpaca cash and remaining global exposure room.
 
+## Model A v2 profile
+
+After pulling the Model A lifecycle update, apply the revised local `.env` values without touching Alpaca credentials:
+
+```bash
+python scripts/apply_model_a_v2_env.py
+```
+
+The v2 profile uses two-bar breakout confirmation, tighter anti-chase limits, a minimum meaningful position size, structural HOLD/EXIT confirmation, fresh-local-breakout re-entry, and a profit-lock state. The broker-side protective stop remains active as the hard safety layer. Full Level 2/order-book confirmation is intentionally not enabled until a reliable depth provider is connected.
+
 ## Model C architecture
 
 Model C is now a finance-native three-model intelligence stack:
