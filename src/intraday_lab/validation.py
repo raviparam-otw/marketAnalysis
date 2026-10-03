@@ -117,13 +117,12 @@ def offline_checks() -> list[Check]:
         with tempfile.TemporaryDirectory() as directory:
             store = ExperimentSessionStore(directory)
             now = datetime(2026, 9, 28, 9, 20, tzinfo=EASTERN)
-            session = store.create_or_load(83_421.17, now)
+            session = store.create_or_load(83_421.17, now, 100.0)
             total = round(sum(session.allocations.values()), 2)
-            spread = max(session.allocations.values()) - min(session.allocations.values())
-            passed = total == 83_421.17 and round(spread, 2) <= 0.01 and set(session.allocations) == {"A", "C"}
+            passed = total == 200.0 and session.allocations == {"A": 100.0, "C": 100.0}
             checks.append(
                 Check(
-                    "dynamic-two-way-split",
+                    "fixed-two-way-allocation",
                     passed,
                     f"A={session.allocations['A']:.2f}, C={session.allocations['C']:.2f}",
                 )
@@ -273,14 +272,17 @@ def alpaca_checks() -> list[Check]:
             preview = preview_store.create_or_load(
                 account["equity"],
                 datetime.now(EASTERN),
+                settings.model_allocation_dollars,
             )
         allocations = preview.allocations
         allocation_total = round(sum(allocations.values()), 2)
         split_ok = (
-            account["equity"] > 0
-            and set(allocations) == {"A", "C"}
-            and allocation_total == round(account["equity"], 2)
-            and max(allocations.values()) - min(allocations.values()) <= 0.01
+            account["equity"] >= settings.model_allocation_dollars * 2
+            and allocations == {
+                "A": settings.model_allocation_dollars,
+                "C": settings.model_allocation_dollars,
+            }
+            and allocation_total == round(settings.model_allocation_dollars * 2, 2)
         )
         checks.append(
             Check(
