@@ -39,7 +39,10 @@ class Settings:
     # Historical/backtest baseline. The live A/C engine does NOT assume this balance.
     starting_balance: float = field(default_factory=lambda: _float("STARTING_BALANCE", 100_000))
 
-    # Legacy fallback only. Live sessions freeze equal A/C allocations from Alpaca equity at Start.
+    # A/C experiment capital is intentionally capped so this bot can safely share an Alpaca PAPER account.
+    model_allocation_dollars: float = field(default_factory=lambda: _float("MODEL_ALLOCATION_DOLLARS", 100.0))
+
+    # Legacy fallback only. Historical/backtest helpers may still read this value.
     model_capital: float = field(default_factory=lambda: _float("MODEL_CAPITAL", 50_000))
 
     # Risk scales with each model's frozen session allocation.
@@ -269,6 +272,8 @@ class Settings:
 
         if not (0 < self.stop_loss_pct < self.take_profit_pct < 1):
             raise ValueError("Expected 0 < stop loss < take profit < 1.")
+        if self.model_allocation_dollars <= 0:
+            raise ValueError("MODEL_ALLOCATION_DOLLARS must be positive.")
         if self.starting_balance <= 0:
             raise ValueError("STARTING_BALANCE must be positive.")
         if not (self.floor_equity < self.starting_balance < self.target_equity):
