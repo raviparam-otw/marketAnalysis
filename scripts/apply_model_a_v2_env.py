@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
 
 MODEL_A_V2 = {
+    "MODEL_ALLOCATION_DOLLARS": "100",
     "MODEL_A_CONFIRMATION_BARS": "2",
     "MODEL_A_MAX_EXTENSION_FROM_OR_PCT": "0.03",
     "MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT": "0.03",
