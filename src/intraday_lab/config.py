@@ -60,14 +60,18 @@ class Settings:
     model_a_failed_breakout_max_gain_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_MAX_GAIN_PCT", 0.003))
     model_a_failed_breakout_exit_pct: float = field(default_factory=lambda: _float("MODEL_A_FAILED_BREAKOUT_EXIT_PCT", 0.002))
     model_a_breakout_buffer_pct: float = field(default_factory=lambda: _float("MODEL_A_BREAKOUT_BUFFER_PCT", 0.0008))
-    model_a_confirmation_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_CONFIRMATION_BARS", "1")))
-    model_a_max_extension_from_or_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_OR_PCT", 0.08))
-    model_a_max_extension_from_vwap_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT", 0.06))
+    model_a_confirmation_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_CONFIRMATION_BARS", "2")))
+    model_a_max_extension_from_or_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_OR_PCT", 0.03))
+    model_a_max_extension_from_vwap_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_EXTENSION_FROM_VWAP_PCT", 0.03))
     model_a_max_bar_age_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_BAR_AGE_SECONDS", "120")))
     model_a_max_entry_spread_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_ENTRY_SPREAD_PCT", 0.01))
     model_a_max_entry_slippage_pct: float = field(default_factory=lambda: _float("MODEL_A_MAX_ENTRY_SLIPPAGE_PCT", 0.005))
     model_a_quote_max_age_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_QUOTE_MAX_AGE_SECONDS", "5")))
-    model_a_reentry_cooldown_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_REENTRY_COOLDOWN_MINUTES", "8")))
+    model_a_reentry_cooldown_minutes: int = field(default_factory=lambda: int(os.getenv("MODEL_A_REENTRY_COOLDOWN_MINUTES", "10")))
+    model_a_reentry_min_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_REENTRY_MIN_BARS", "5")))
+    model_a_min_position_pct: float = field(default_factory=lambda: _float("MODEL_A_MIN_POSITION_PCT", 0.02))
+    model_a_structure_confirm_bars: int = field(default_factory=lambda: int(os.getenv("MODEL_A_STRUCTURE_CONFIRM_BARS", "2")))
+    model_a_structure_break_pct: float = field(default_factory=lambda: _float("MODEL_A_STRUCTURE_BREAK_PCT", 0.001))
     model_a_max_entries_per_symbol: int = field(default_factory=lambda: int(os.getenv("MODEL_A_MAX_ENTRIES_PER_SYMBOL", "3")))
     model_a_entry_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MODEL_A_ENTRY_TIMEOUT_SECONDS", "20")))
 
@@ -244,6 +248,14 @@ class Settings:
             raise ValueError("MODEL_A_MAX_ENTRY_SLIPPAGE_PCT must be between 0 and 1.")
         if self.model_a_reentry_cooldown_minutes < 0:
             raise ValueError("MODEL_A_REENTRY_COOLDOWN_MINUTES cannot be negative.")
+        if self.model_a_reentry_min_bars < 2:
+            raise ValueError("MODEL_A_REENTRY_MIN_BARS must be at least 2.")
+        if not (0 < self.model_a_min_position_pct < 1):
+            raise ValueError("MODEL_A_MIN_POSITION_PCT must be between 0 and 1.")
+        if self.model_a_structure_confirm_bars not in (2, 3):
+            raise ValueError("MODEL_A_STRUCTURE_CONFIRM_BARS must be 2 or 3.")
+        if not (0 <= self.model_a_structure_break_pct < 0.02):
+            raise ValueError("MODEL_A_STRUCTURE_BREAK_PCT must be between 0 and 0.02.")
         if self.model_a_max_entries_per_symbol <= 0:
             raise ValueError("MODEL_A_MAX_ENTRIES_PER_SYMBOL must be positive.")
         if self.model_a_entry_timeout_seconds <= 0:
